@@ -17,7 +17,7 @@ import {
   retryJob,
   setJobProgress,
   syncApp,
-  withTimeout,
+  waitForDb,
   type Job,
 } from "@lens/core"
 import { migrate } from "@lens/core/migrate"
@@ -51,7 +51,7 @@ function progressWriter(jobId: string) {
   }
 }
 
-async function run(job: Job): Promise<string> {
+async function run(job: Job, signal: AbortSignal): Promise<string> {
   const appId = String(job.payload.appId ?? "")
   const onProgress = progressWriter(job.id)
   switch (job.type) {
@@ -62,7 +62,7 @@ async function run(job: Job): Promise<string> {
       return `Queued ${apps.length} app${apps.length === 1 ? "" : "s"}`
     }
     case "sync_app": {
-      const r = await syncApp(appId, { log: (m) => log(m, { job: job.id, appId }), onProgress })
+      const r = await syncApp(appId, { log: (m) => log(m, { job: job.id, appId }), onProgress, signal })
       const settings = await getSettings()
       if (aiConfigured(settings) && settings.ai.autoAnalyse && (r.newReviews > 0 || !(await getInsights(appId)))) {
         await enqueue("analyse_app", { appId })
@@ -77,7 +77,7 @@ async function run(job: Job): Promise<string> {
       return `${r.name}: ${parts.join(" · ")}`
     }
     case "analyse_app": {
-      const r = await analyseApp(appId, { log: (m) => log(m, { job: job.id, appId }), onProgress })
+      const r = await analyseApp(appId, { log: (m) => log(m, { job: job.id, appId }), onProgress, signal })
       return `${r.classified} reviews classified · insights from ${r.reviewsCount} reviews`
     }
     default:
@@ -95,7 +95,20 @@ async function loop(slot: number) {
         continue
       }
       log("job started", { slot, job: job.id, type: job.type, payload: job.payload, attempt: job.attempts })
-      const result = await withTimeout(run(job), JOB_TIMEOUT_MS, "Job")
+      // The timeout aborts the work itself (checked between steps), not just the wait,
+      // so a timed-out job can never run alongside its own retry.
+      const ac = new AbortController()
+      const timeoutError = new Error(`Job timed out after ${Math.round(JOB_TIMEOUT_MS / 60_000)} min`)
+      const timer = setTimeout(() => ac.abort(timeoutError), JOB_TIMEOUT_MS)
+      let result: string
+      try {
+        result = await Promise.race([
+          run(job, ac.signal),
+          new Promise<never>((_, reject) => ac.signal.addEventListener("abort", () => reject(ac.signal.reason), { once: true })),
+        ])
+      } finally {
+        clearTimeout(timer)
+      }
       await finishJob(job.id, result)
       log("job finished", { job: job.id, result })
     } catch (e) {
@@ -146,6 +159,7 @@ async function refreshSchedule() {
 
 async function main() {
   log("worker starting", { mediaDir: env.mediaDir, concurrency: CONCURRENCY })
+  await waitForDb((m) => log(m))
   await migrate((m) => log(m))
   const requeued = await requeueStale(0)
   if (requeued) log("requeued interrupted jobs", { count: requeued })

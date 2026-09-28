@@ -246,6 +246,29 @@ suite("pipeline", () => {
     await core.db()`delete from jobs`
   })
 
+  it("does not re-download an image listed under two URLs", async () => {
+    const fetched: string[] = []
+    await core.syncApp(appId, { client: () => fakeClient, fetchImage: (u) => (fetched.push(u), fetchImage(u)), reviewsPerApp: 25 })
+    expect(fetched.filter((u) => !u.includes("icon"))).toEqual([])
+  })
+
+  it("claims at most one job per app even when workers race", async () => {
+    await core.db()`delete from jobs`
+    await core.enqueue("sync_app", { appId })
+    await core.enqueue("analyse_app", { appId })
+    const claimed = (await Promise.all(Array.from({ length: 6 }, () => core.claimJob()))).filter(Boolean)
+    expect(claimed).toHaveLength(1)
+    await core.db()`delete from jobs`
+  })
+
+  it("stops a sync when its signal is aborted", async () => {
+    const ac = new AbortController()
+    ac.abort(new Error("Job timed out after 15 min"))
+    await expect(core.syncApp(appId, { client: () => fakeClient, fetchImage, signal: ac.signal })).rejects.toThrow(/timed out/)
+    expect(core.isTransient("Job timed out after 15 min")).toBe(false)
+    await core.syncApp(appId, { client: () => fakeClient, fetchImage, reviewsPerApp: 25 })
+  })
+
   it("marks the app as errored when the store fails", async () => {
     const broken: StoreClient = {
       ...fakeClient,

@@ -36,7 +36,7 @@ export function AddAppDialog() {
   const [searchError, setSearchError] = React.useState<string | null>(null)
   const [picked, setPicked] = React.useState<Result | null>(null)
   const [country, setCountry] = React.useState("")
-  const [lang, setLang] = React.useState("en")
+  const [lang, setLang] = React.useState("auto")
   const [pending, startTransition] = React.useTransition()
 
   const reset = () => {
@@ -71,7 +71,7 @@ export function AddAppDialog() {
     const value = mode === "link" ? link : (picked?.storeId ?? "")
     if (!value) return
     startTransition(async () => {
-      const r = await addAppAction({ link: value, country: country || undefined, lang })
+      const r = await addAppAction({ link: value, country: country || undefined, lang: lang === "auto" ? undefined : lang })
       if (!r.ok) {
         toast.error(r.error)
         return
@@ -96,7 +96,7 @@ export function AddAppDialog() {
       }}
     >
       <DialogTrigger asChild>
-        <Button size="sm" className="h-8">
+        <Button size="sm" className="h-8" aria-label="Add app">
           <Plus />
           <span className="hidden sm:inline">Add app</span>
         </Button>
@@ -187,15 +187,15 @@ export function AddAppDialog() {
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-2">
             <Label>Country</Label>
             <Select value={country || "auto"} onValueChange={(v) => setCountry(v === "auto" ? "" : v)}>
-              <SelectTrigger className="w-full" aria-label="Country">
+              <SelectTrigger className="w-full min-w-0" aria-label="Country">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="auto">From link, else US</SelectItem>
+                <SelectItem value="auto">Auto (from link, else US)</SelectItem>
                 {COUNTRIES.map(([code, name]) => (
                   <SelectItem key={code} value={code}>
                     {name} ({code.toUpperCase()})
@@ -207,10 +207,11 @@ export function AddAppDialog() {
           <div className="grid gap-2">
             <Label>Review language</Label>
             <Select value={lang} onValueChange={setLang}>
-              <SelectTrigger className="w-full" aria-label="Review language">
+              <SelectTrigger className="w-full min-w-0" aria-label="Review language">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="auto">Auto (from country)</SelectItem>
                 {LANGUAGES.map(([code, name]) => (
                   <SelectItem key={code} value={code}>
                     {name}
@@ -221,7 +222,8 @@ export function AddAppDialog() {
           </div>
         </div>
         <p className="-mt-2 text-xs text-muted-foreground">
-          Language filters Google Play reviews. The App Store returns reviews in any language.
+          Google Play only returns reviews in the chosen language (Egypt → Arabic, Türkiye → Turkish by default). The App Store returns all
+          languages.
         </p>
 
         <DialogFooter>

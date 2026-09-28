@@ -21,6 +21,13 @@ export async function chat(cfg: Settings["ai"], messages: ChatMessage[], opts: {
   }
   if (opts.json) body.response_format = { type: "json_object" }
 
+  const host = (() => {
+    try {
+      return new URL(url).host
+    } catch {
+      throw new AiError(`The AI base URL "${cfg.baseUrl}" is not a valid URL.`)
+    }
+  })()
   const send = async (b: Record<string, unknown>) =>
     fetch(url, {
       method: "POST",
@@ -30,6 +37,9 @@ export async function chat(cfg: Settings["ai"], messages: ChatMessage[], opts: {
       },
       body: JSON.stringify(b),
       signal: AbortSignal.timeout(120_000),
+    }).catch((e: Error & { cause?: { code?: string; message?: string } }) => {
+      const reason = e.name === "TimeoutError" ? "timed out after 120s" : (e.cause?.code ?? e.cause?.message ?? e.message)
+      throw new AiError(`Could not reach the AI provider at ${host} (${reason}). Check the base URL in Settings.`)
     })
 
   let res = await send(body)
@@ -40,7 +50,9 @@ export async function chat(cfg: Settings["ai"], messages: ChatMessage[], opts: {
   }
   if (!res.ok) {
     const text = await res.text().catch(() => "")
-    throw new AiError(`AI provider returned HTTP ${res.status}: ${text.slice(0, 300)}`)
+    const hint =
+      res.status === 401 || res.status === 403 ? " Check the API key." : res.status === 404 ? " Check the base URL and model name." : ""
+    throw new AiError(`AI provider returned HTTP ${res.status}.${hint} ${text.slice(0, 300)}`.trim())
   }
   const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
   const content = data.choices?.[0]?.message?.content

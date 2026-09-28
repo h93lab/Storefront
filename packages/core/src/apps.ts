@@ -12,10 +12,44 @@ export interface AddAppInput {
   lang?: string
 }
 
+/** Review language that matches a storefront, used when none is chosen. Google Play filters reviews by it. */
+const COUNTRY_LANG: Record<string, string> = {
+  eg: "ar",
+  sa: "ar",
+  ae: "ar",
+  kw: "ar",
+  qa: "ar",
+  bh: "ar",
+  om: "ar",
+  jo: "ar",
+  lb: "ar",
+  iq: "ar",
+  ma: "ar",
+  dz: "ar",
+  tn: "ar",
+  ly: "ar",
+  tr: "tr",
+  de: "de",
+  at: "de",
+  fr: "fr",
+  es: "es",
+  mx: "es",
+  ar: "es",
+  it: "it",
+  br: "pt",
+  pt: "pt",
+  jp: "ja",
+  kr: "ko",
+  ru: "ru",
+  nl: "nl",
+  id: "id",
+}
+export const defaultLang = (country: string) => COUNTRY_LANG[country.toLowerCase()] ?? "en"
+
 /** Adds an app to the library (idempotent) and queues its first sync. */
 export async function addApp(input: AddAppInput) {
   const country = (input.country ?? "us").toLowerCase()
-  const lang = (input.lang ?? "en").toLowerCase()
+  const lang = (input.lang || defaultLang(country)).toLowerCase()
   if (!/^[a-z]{2}$/.test(country)) throw new Error("Country must be a two-letter code such as US or EG")
   const sql = db()
   const [row] = await sql<{ id: string; created: boolean }[]>`

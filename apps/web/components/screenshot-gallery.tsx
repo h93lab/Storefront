@@ -54,7 +54,7 @@ export function ScreenshotGallery({
               aria-label={`View ${s.label}`}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={mediaSrc(s.path)!} alt={`${appName} ${s.label}`} loading="lazy" className="w-full" />
+              <img src={mediaSrc(s.path, 480)!} alt={`${appName} ${s.label}`} loading="lazy" className="w-full" />
             </button>
             <div className="flex items-center justify-between gap-2">
               <span className="truncate text-xs text-muted-foreground">

@@ -1,6 +1,6 @@
 import Link from "next/link"
 import { AppWindow, FileText, History, Image as ImageIcon, RefreshCw, Tag, Type } from "lucide-react"
-import { getScreenshotsByHashes, type Change } from "@lens/core"
+import { screenshotPaths, type Change } from "@lens/core"
 import { AppIcon } from "@/components/app-icon"
 import { BeforeAfter } from "@/components/before-after"
 import { Badge } from "@/components/ui/badge"
@@ -36,16 +36,15 @@ function TextDiff({ oldValue, newValue }: { oldValue: unknown; newValue: unknown
 }
 
 export async function ChangesTimeline({ changes, showApp }: { changes: Change[]; showApp?: boolean }) {
-  const shots = await Promise.all(
-    changes.map(async (c) =>
-      c.field === "screenshots"
-        ? {
-            before: (await getScreenshotsByHashes(c.app_id, (c.old_value as string[]) ?? [])).map((s) => s.path),
-            after: (await getScreenshotsByHashes(c.app_id, (c.new_value as string[]) ?? [])).map((s) => s.path),
-          }
-        : null,
-    ),
+  // One query for every before/after screenshot on the page.
+  const hashes = (v: unknown) => (Array.isArray(v) ? (v as string[]) : [])
+  const paths = await screenshotPaths(
+    changes
+      .filter((c) => c.field === "screenshots")
+      .flatMap((c) => [...hashes(c.old_value), ...hashes(c.new_value)].map((hash) => ({ appId: c.app_id, hash }))),
   )
+  const resolve = (c: Change, v: unknown) => hashes(v).flatMap((h) => paths.get(`${c.app_id}:${h}`) ?? [])
+  const shots = changes.map((c) => (c.field === "screenshots" ? { before: resolve(c, c.old_value), after: resolve(c, c.new_value) } : null))
   return (
     <ol className="grid">
       {changes.map((c, i) => {

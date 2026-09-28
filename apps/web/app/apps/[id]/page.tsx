@@ -1,16 +1,16 @@
+import { cache } from "react"
 import type { Metadata } from "next"
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { AlertTriangle, ExternalLink, GitCompare, Lightbulb, LoaderCircle, Star, TrendingDown, TrendingUp } from "lucide-react"
+import { AlertTriangle, ExternalLink, GitCompare, Lightbulb, Star, TrendingDown, TrendingUp } from "lucide-react"
 import {
+  activeJobs,
   getApp,
   getChanges,
   getInsights,
   getReviews,
   getScreenshots,
-  getScreenshotsByHashes,
   getSettings,
-  pendingJobsFor,
   ratingBreakdown,
   ratingHistory,
   topicCounts,
@@ -21,8 +21,10 @@ import {
 import { AnalyseButton } from "@/components/analyse-button"
 import { AppIcon } from "@/components/app-icon"
 import { AppTabs } from "@/components/app-tabs"
-import { AutoRefresh } from "@/components/auto-refresh"
 import { ChangesTimeline } from "@/components/changes-timeline"
+import { JobWatcher } from "@/components/job-watcher"
+import { LanguageSelect } from "@/components/language-select"
+import { SyncIssues, SyncReportCard } from "@/components/sync-report"
 import { RatingChart } from "@/components/charts"
 import { ReviewsPanel } from "@/components/reviews-panel"
 import { ScreenshotGallery } from "@/components/screenshot-gallery"
@@ -39,19 +41,38 @@ import { ago, bytes, compact, COUNTRIES, date, LANGUAGES, storeLabel } from "@/l
 
 type Params = { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | undefined>> }
 
+// Shared by generateMetadata and the page within one request.
+const loadApp = cache(getApp)
+
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
-  const app = await getApp((await params).id)
+  const app = await loadApp((await params).id)
   return { title: app?.name || "App" }
 }
 
 export default async function AppPage({ params, searchParams }: Params) {
   const { id } = await params
   const sp = await searchParams
-  const app = await getApp(id)
-  if (!app) notFound()
   const tab = ["screenshots", "reviews", "insights", "changes"].includes(sp.tab ?? "") ? sp.tab! : "overview"
-  const [jobs, changes] = await Promise.all([pendingJobsFor(id), getChanges({ appId: id })])
-  const syncing = app.status === "pending" || app.status === "syncing" || jobs.some((j) => j.type === "sync_app")
+  // Every query for this page starts at once; each adds a network round trip to the database.
+  const limit = Math.min(Number(sp.limit) || 50, 500)
+  const rating = (["pos", "neu", "neg"].includes(sp.rating ?? "") ? sp.rating : "all") as RatingFilter
+  const sort = sp.sort === "low" || sp.sort === "high" ? sp.sort : "new"
+  const validId = /^[0-9a-f-]{36}$/i.test(id)
+  const overviewP = validId && tab === "overview" ? Promise.all([ratingHistory(id, 90), ratingBreakdown(id)]) : null
+  const screensP =
+    validId && tab === "screenshots" ? Promise.all([getScreenshots(id, { includeInactive: sp.all === "1" }), boardOptions()]) : null
+  const reviewsP =
+    validId && tab === "reviews"
+      ? Promise.all([getReviews(id, { rating, q: sp.q, topic: sp.topic, sort, limit }), topicCounts(id), boardOptions()])
+      : null
+  const insightsP = validId && tab === "insights" ? Promise.all([getInsights(id), getSettings(), unanalysedCount(id)]) : null
+  // Tab queries run alongside the app query; if the page bails out early (not found,
+  // still pending) they are simply dropped, so mark them handled.
+  for (const pr of [overviewP, screensP, reviewsP, insightsP]) pr?.catch(() => {})
+  const [app, jobs, changes] = await Promise.all([loadApp(id), validId ? activeJobs(id) : [], validId ? getChanges({ appId: id }) : []])
+  if (!app) notFound()
+  // Only a queued or running job means work is happening; a stale status alone does not.
+  const syncing = jobs.some((j) => j.type === "sync_app")
   const analysing = jobs.some((j) => j.type === "analyse_app")
   const name = app.name || app.store_id
   const country = COUNTRIES.find(([c]) => c === app.country)?.[1] ?? app.country.toUpperCase()
@@ -61,14 +82,19 @@ export default async function AppPage({ params, searchParams }: Params) {
   if (app.status === "pending") {
     body = (
       <div className="grid gap-4">
-        <Alert>
-          <LoaderCircle className="animate-spin" />
-          <AlertTitle>
-            Fetching {app.store_id} from {storeLabel(app.store)}
-          </AlertTitle>
-          <AlertDescription>Listing, screenshots and reviews usually take under a minute. This page updates on its own.</AlertDescription>
-        </Alert>
-        <div className="grid gap-4 sm:grid-cols-4">
+        {jobs.length === 0 && (
+          <Alert>
+            <AlertTriangle />
+            <AlertTitle>No sync is queued for this app</AlertTitle>
+            <AlertDescription>
+              The first sync did not finish. Start it again; progress shows here while it runs.
+              <div className="mt-2">
+                <SyncButton appId={id} label="Start sync" />
+              </div>
+            </AlertDescription>
+          </Alert>
+        )}
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
           {[1, 2, 3, 4].map((i) => (
             <Skeleton key={i} className="h-28" />
           ))}
@@ -77,14 +103,14 @@ export default async function AppPage({ params, searchParams }: Params) {
       </div>
     )
   } else if (tab === "overview") {
-    const [history, breakdown] = await Promise.all([ratingHistory(id, 90), ratingBreakdown(id)])
+    const [history, breakdown] = await overviewP!
     const first = history.find((h) => h.rating != null)?.rating
     const last = [...history].reverse().find((h) => h.rating != null)?.rating
     const trend = first != null && last != null ? last - first : null
     const maxCount = Math.max(1, ...breakdown.map((b) => b.count))
     body = (
       <>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
           <StatCard
             label="Rating"
             value={app.rating != null ? app.rating.toFixed(2) : "—"}
@@ -171,47 +197,52 @@ export default async function AppPage({ params, searchParams }: Params) {
               )}
             </CardContent>
           </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>Details</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2.5 text-sm">
-                {[
-                  ["Developer", app.developer],
-                  ["Category", app.category],
-                  ["Store", storeLabel(app.store)],
-                  [
-                    "Store id",
-                    <span key="sid" className="font-mono text-xs break-all">
-                      {app.store_id}
-                    </span>,
-                  ],
-                  ["Country", country],
-                  ["Review language", LANGUAGES.find(([c]) => c === app.lang)?.[1] ?? app.lang],
-                  ["Size", bytes(app.size_bytes)],
-                  ["Content rating", app.content_rating],
-                  ["Added", date(app.created_at)],
-                  ["Last sync", ago(app.last_synced_at)],
-                ].map(([k, v]) => (
-                  <div key={String(k)} className="contents">
-                    <dt className="text-muted-foreground">{k}</dt>
-                    <dd className="text-right">{v ?? "—"}</dd>
-                  </div>
-                ))}
-              </dl>
-            </CardContent>
-          </Card>
+          <div className="grid content-start gap-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Details</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2.5 text-sm">
+                  {[
+                    ["Developer", app.developer],
+                    ["Category", app.category],
+                    ["Store", storeLabel(app.store)],
+                    [
+                      "Store id",
+                      <span key="sid" className="font-mono text-xs break-all">
+                        {app.store_id}
+                      </span>,
+                    ],
+                    ["Country", country],
+                    [
+                      "Review language",
+                      app.store === "android" ? <LanguageSelect key="lang" appId={id} value={app.lang} /> : "All (App Store)",
+                    ],
+                    ["Size", bytes(app.size_bytes)],
+                    ["Content rating", app.content_rating],
+                    ["Added", date(app.created_at)],
+                  ].map(([k, v]) => (
+                    <div key={String(k)} className="contents">
+                      <dt className="text-muted-foreground">{k}</dt>
+                      <dd className="text-right">{v ?? "—"}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </CardContent>
+            </Card>
+            <SyncReportCard report={app.sync_report} lastSyncedAt={app.last_synced_at} />
+          </div>
         </div>
       </>
     )
   } else if (tab === "screenshots") {
-    const [shots, boards] = await Promise.all([getScreenshots(id, { includeInactive: sp.all === "1" }), boardOptions()])
+    const [shots, boards] = await screensP!
     // Screens added by a screenshot change in the last 7 days get a "new" badge.
     const newest = changes.find((c) => c.field === "screenshots" && Date.now() - new Date(c.detected_at).getTime() < 7 * 864e5)
     const before = new Set((newest?.old_value as string[] | null) ?? [])
     const added = ((newest?.new_value as string[] | null) ?? []).filter((h) => !before.has(h))
-    const newPaths = new Set((await getScreenshotsByHashes(id, added)).map((s) => s.path))
+    const newPaths = new Set(shots.filter((sh) => added.includes(sh.hash)).map((sh) => sh.path))
     const phone = shots.filter((s) => s.device === "phone")
     const tablet = shots.filter((s) => s.device !== "phone")
     const toGallery = (list: Screenshot[]) =>
@@ -255,27 +286,48 @@ export default async function AppPage({ params, searchParams }: Params) {
       </Empty>
     )
   } else if (tab === "reviews") {
-    const limit = Math.min(Number(sp.limit) || 50, 500)
-    const rating = (["pos", "neu", "neg"].includes(sp.rating ?? "") ? sp.rating : "all") as RatingFilter
-    const sort = sp.sort === "low" || sp.sort === "high" ? sp.sort : "new"
-    const [{ rows, total }, topics, boards] = await Promise.all([
-      getReviews(id, { rating, q: sp.q, topic: sp.topic, sort, limit }),
-      topicCounts(id),
-      boardOptions(),
-    ])
-    body = (
-      <ReviewsPanel
-        appId={id}
-        appName={name}
-        rows={rows.map((r) => ({ ...r, reviewed_at: r.reviewed_at ? new Date(r.reviewed_at).toISOString() : null }))}
-        total={total}
-        topics={topics}
-        boards={boards}
-        limit={limit}
-      />
-    )
+    const [{ rows, total }, topics, boards] = await reviewsP!
+    const report = app.sync_report
+    body =
+      app.reviews_count === 0 ? (
+        <Empty className="border">
+          <EmptyHeader>
+            <EmptyTitle>No reviews stored yet</EmptyTitle>
+            <EmptyDescription>
+              {syncing
+                ? "Reviews are being fetched right now."
+                : (report?.warnings.find((w) => /review/i.test(w)) ??
+                  (report ? "The last sync did not return any reviews." : "Reviews arrive with the first sync."))}
+              {report?.notes.length ? <span className="mt-2 block text-xs">{report.notes.join(" · ")}</span> : null}
+              {!syncing && app.store === "android" && (
+                <span className="mt-2 block text-xs">
+                  Google Play only returns reviews written in the app&apos;s review language (see Overview → Details).
+                </span>
+              )}
+            </EmptyDescription>
+          </EmptyHeader>
+          {!syncing && (
+            <div className="flex flex-wrap justify-center gap-2">
+              <SyncButton appId={id} label="Fetch again" />
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/settings#diagnostics">Run diagnostics</Link>
+              </Button>
+            </div>
+          )}
+        </Empty>
+      ) : (
+        <ReviewsPanel
+          appId={id}
+          appName={name}
+          rows={rows.map((r) => ({ ...r, reviewed_at: r.reviewed_at ? new Date(r.reviewed_at).toISOString() : null }))}
+          total={total}
+          topics={topics}
+          boards={boards}
+          limit={limit}
+        />
+      )
   } else if (tab === "insights") {
-    const [ins, settings, pending] = await Promise.all([getInsights(id), getSettings(), unanalysedCount(id)])
+    const [ins, settings, pending] = await insightsP!
     const configured = Boolean(settings.ai.baseUrl && settings.ai.model)
     if (!ins) {
       body = (
@@ -415,15 +467,15 @@ export default async function AppPage({ params, searchParams }: Params) {
 
   return (
     <>
-      <AutoRefresh active={syncing || analysing} />
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
         <div className="flex min-w-0 flex-1 items-start gap-4">
           <AppIcon name={name} path={app.icon_path} className="size-16 text-2xl sm:size-18" />
           <div className="grid min-w-0 flex-1 gap-1.5">
             <h1 className="text-2xl font-semibold tracking-tight">{name}</h1>
             <p className="text-muted-foreground">
-              {app.developer ?? "—"}
-              {app.category ? ` · ${app.category}` : ""}
+              {app.status === "pending" && !app.developer
+                ? `Fetching from ${storeLabel(app.store)} (${app.country.toUpperCase()})…`
+                : `${app.developer ?? "—"}${app.category ? ` · ${app.category}` : ""}`}
             </p>
             <div className="flex flex-wrap gap-1.5">
               <Badge variant="outline">{storeLabel(app.store)}</Badge>
@@ -455,15 +507,11 @@ export default async function AppPage({ params, searchParams }: Params) {
           )}
         </div>
       </div>
-      {app.status === "error" && app.last_error && (
-        <Alert variant="destructive">
-          <AlertTriangle />
-          <AlertTitle>Last sync failed</AlertTitle>
-          <AlertDescription>{app.last_error}</AlertDescription>
-        </Alert>
-      )}
-      <AppTabs tab={tab} counts={{ reviews: app.reviews_count, screenshots: app.screenshots_count, changes: changes.length }} />
-      {body}
+      <JobWatcher appId={id} initial={jobs.map((j) => ({ ...j, run_after: new Date(j.run_after).toISOString() }))} />
+      <SyncIssues appId={id} report={app.sync_report} status={app.status} lastError={app.last_error} busy={jobs.length > 0} />
+      <AppTabs tab={tab} counts={{ reviews: app.reviews_count, screenshots: app.screenshots_count, changes: changes.length }}>
+        {body}
+      </AppTabs>
     </>
   )
 }

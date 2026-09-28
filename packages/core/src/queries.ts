@@ -34,6 +34,7 @@ export interface AppDetail extends AppSummary {
   store_url: string | null
   reviews_count: number
   screenshots_count: number
+  sync_report: import("./sync").SyncReport | null
 }
 
 const appCols = (sql = db()) => sql`
@@ -65,7 +66,7 @@ export async function getApp(id: string): Promise<AppDetail | null> {
   const sql = db()
   const [row] = await sql<AppDetail[]>`
     select ${appCols(sql)}, a.description, a.release_notes, a.price_value::float8 as price_value, a.currency,
-      a.updated_at_store, a.size_bytes::float8 as size_bytes, a.content_rating, a.store_url,
+      a.updated_at_store, a.size_bytes::float8 as size_bytes, a.content_rating, a.store_url, a.sync_report,
       (select count(*)::int from reviews r where r.app_id = a.id) as reviews_count,
       (select count(*)::int from screenshots s where s.app_id = a.id and s.active) as screenshots_count
     from apps a where a.id = ${id}`
@@ -75,6 +76,7 @@ export async function getApp(id: string): Promise<AppDetail | null> {
 export interface Screenshot {
   id: string
   app_id: string
+  hash: string
   path: string
   width: number | null
   height: number | null
@@ -87,7 +89,7 @@ export interface Screenshot {
 
 export async function getScreenshots(appId: string, opts: { includeInactive?: boolean } = {}) {
   return db()<Screenshot[]>`
-    select id::text, app_id, path, width, height, position, device, active, first_seen_at, last_seen_at
+    select id::text, app_id, hash, path, width, height, position, device, active, first_seen_at, last_seen_at
     from screenshots where app_id = ${appId} and (${opts.includeInactive ?? false} or active)
     order by active desc, device desc, position, first_seen_at desc`
 }
@@ -99,6 +101,17 @@ export async function getScreenshotsByHashes(appId: string, hashes: string[]) {
     from screenshots where app_id = ${appId} and hash = any(${hashes})`
   const byHash = new Map(rows.map((r) => [r.hash, r]))
   return hashes.map((h) => byHash.get(h)).filter((x): x is Screenshot & { hash: string } => Boolean(x))
+}
+
+/** Paths for many (app, hash) pairs in one query; key is `${appId}:${hash}`. */
+export async function screenshotPaths(pairs: { appId: string; hash: string }[]) {
+  const map = new Map<string, string>()
+  if (!pairs.length) return map
+  const rows = await db()<{ app_id: string; hash: string; path: string }[]>`
+    select app_id, hash, path from screenshots
+    where (app_id::text, hash) in (select * from unnest(${pairs.map((p) => p.appId)}::text[], ${pairs.map((p) => p.hash)}::text[]))`
+  for (const r of rows) map.set(`${r.app_id}:${r.hash}`, r.path)
+  return map
 }
 
 export async function getScreenshot(id: string) {
@@ -152,10 +165,12 @@ export async function getReviews(appId: string, f: ReviewQuery = {}) {
         ? sql`rating desc nulls last, reviewed_at desc`
         : sql`reviewed_at desc nulls last`
   const limit = Math.min(Math.max(f.limit ?? 50, 1), 500)
-  const rows = await sql<Review[]>`
-    select app_id, review_id, author, rating, title, body, app_version, reviewed_at, sentiment, topic, label, label_kind
-    from reviews where ${where} order by ${order} limit ${limit} offset ${f.offset ?? 0}`
-  const [{ total }] = await sql<{ total: number }[]>`select count(*)::int as total from reviews where ${where}`
+  const [rows, [{ total }]] = await Promise.all([
+    sql<Review[]>`
+      select app_id, review_id, author, rating, title, body, app_version, reviewed_at, sentiment, topic, label, label_kind
+      from reviews where ${where} order by ${order} limit ${limit} offset ${f.offset ?? 0}`,
+    sql<{ total: number }[]>`select count(*)::int as total from reviews where ${where}`,
+  ])
   return { rows, total }
 }
 
@@ -273,4 +288,13 @@ export async function compareApps(ids: string[]) {
       (select to_jsonb(i) from insights i where i.app_id = a.id) as insights
     from apps a where a.id = any(${valid}::uuid[])`
   return valid.map((id) => rows.find((r) => r.id === id)).filter((x): x is NonNullable<typeof x> => Boolean(x))
+}
+
+/** Everything the app shell (sidebar, command menu) needs, in one round trip. */
+export async function navSummary() {
+  const [row] = await db()<{ apps: { id: string; name: string; store: Store; icon: string | null }[] | null; boards: number }[]>`
+    select
+      (select json_agg(json_build_object('id', id, 'name', coalesce(nullif(name, ''), store_id), 'store', store, 'icon', icon_path) order by created_at desc) from apps) as apps,
+      (select count(*)::int from boards) as boards`
+  return { apps: row.apps ?? [], boards: row.boards }
 }

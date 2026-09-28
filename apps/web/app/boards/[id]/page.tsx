@@ -49,7 +49,7 @@ export default async function BoardPage({ params }: Params) {
                   className="overflow-hidden rounded-xl border bg-muted"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={mediaSrc(i.screenshot_path)!} alt={`${i.app_name} screenshot`} loading="lazy" className="w-full" />
+                  <img src={mediaSrc(i.screenshot_path, 480)!} alt={`${i.app_name} screenshot`} loading="lazy" className="w-full" />
                 </a>
                 <div className="flex items-center justify-between gap-2">
                   <Link href={`/apps/${i.app_id}?tab=screenshots`} className="truncate text-sm font-medium hover:underline">

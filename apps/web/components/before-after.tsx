@@ -15,7 +15,11 @@ export function BeforeAfter({ appName, when, before, after }: { appName: string;
         {paths.map((p) => (
           <div key={p} className="relative w-28 shrink-0 sm:w-32">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={mediaSrc(p)!} alt="" className={`rounded-lg border ${other.includes(p) ? "opacity-50" : "ring-2 ring-warning"}`} />
+            <img
+              src={mediaSrc(p, 240)!}
+              alt=""
+              className={`rounded-lg border ${other.includes(p) ? "opacity-50" : "ring-2 ring-warning"}`}
+            />
           </div>
         ))}
       </div>

@@ -44,7 +44,7 @@ export default async function BoardsPage() {
               <div className="grid h-36 grid-cols-4 gap-1.5 overflow-hidden rounded-lg bg-muted p-2">
                 {b.preview.map((p) => (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img key={p} src={mediaSrc(p)!} alt="" loading="lazy" className="w-full self-start rounded-md border object-cover" />
+                  <img key={p} src={mediaSrc(p, 240)!} alt="" loading="lazy" className="w-full self-start rounded-md border object-cover" />
                 ))}
               </div>
               <div className="grid gap-1">

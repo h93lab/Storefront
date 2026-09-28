@@ -39,7 +39,7 @@ export function AppCard({ app }: { app: AppSummary }) {
             // eslint-disable-next-line @next/next/no-img-element
             <img
               key={p}
-              src={mediaSrc(p)!}
+              src={mediaSrc(p, 240)!}
               alt=""
               loading="lazy"
               className="h-auto w-[30%] self-start rounded-t-lg border border-b-0 object-cover object-top"

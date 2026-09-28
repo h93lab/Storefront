@@ -56,7 +56,7 @@ export function ReviewsPanel({
   boards: BoardOption[]
   limit: number
 }) {
-  const { params, set } = useUrlState()
+  const { params, set, pending } = useUrlState()
   const [saving, setSaving] = React.useState<ReviewRow | null>(null)
   const topic = params.get("topic")
   return (
@@ -104,7 +104,7 @@ export function ReviewsPanel({
         {total.toLocaleString()} review{total === 1 ? "" : "s"}
         {rows.length < total ? ` · showing ${rows.length}` : ""}
       </p>
-      <div className="divide-y rounded-xl border bg-card">
+      <div aria-busy={pending} className={cn("divide-y rounded-xl border bg-card transition-opacity", pending && "opacity-50")}>
         {rows.length === 0 && <p className="p-8 text-center text-sm text-muted-foreground">No reviews match these filters.</p>}
         {rows.map((r) => (
           <article key={r.review_id} className="grid gap-2 p-4">

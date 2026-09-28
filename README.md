@@ -19,7 +19,7 @@ A private, self-hosted library of App Store and Google Play apps: listings, scre
 
 ### 1) Supabase
 
-1. اعمل مشروع جديد.
+1. اعمل مشروع جديد، واختار **Region** قريبة من السيرفر بتاعك (مثلًا Frankfurt لو السيرفر في أوروبا أو الشرق الأوسط). كل صفحة بتعمل كذا طلب للداتابيز، فالمسافة بتفرق في السرعة.
 2. من زرار **Connect** فوق، اختار **Transaction pooler** وانسخ الـ connection string (port `6543`).
 3. حط باسورد الداتابيز مكان `[YOUR-PASSWORD]`. لو الباسورد فيه رموز زي `@` أو `#` لازم تعملها URL-encode.
 
@@ -28,7 +28,7 @@ A private, self-hosted library of App Store and Google Play apps: listings, scre
 ### 2) ملف الإعدادات
 
 ```bash
-git clone https://github.com/h93lab/Storefront-.git storefront-lens
+git clone https://github.com/h93lab/Storefront.git storefront-lens
 cd storefront-lens
 cp .env.example .env
 openssl rand -hex 32   # حط الناتج في MCP_TOKEN
@@ -137,10 +137,37 @@ git pull && docker compose up -d --build
 
 الـ migrations بتتطبق لوحدها.
 
+### لو في مشكلة: التشخيص
+
+افتح **Settings → Diagnostics** ودوس **Run diagnostics**. ولو المشكلة في تطبيق معين، الزق اللينك بتاعه الأول. هيختبر من السيرفر نفسه:
+
+- **الداتابيز:** سرعة كل طلب. لو أكتر من 120ms، الصفحات هتبقى بطيئة، والحل region أقرب في Supabase.
+- **الـ worker:** شغال ولا لأ، وفيه jobs عالقة ولا لأ.
+- **مساحة الصور:** الديسك بيتكتب عليه، وفاضل فيه قد إيه.
+- **الـ App Store:** بيانات التطبيق والتعليقات، وبيقولك جت من أنهي مصدر.
+- **Google Play:** بيانات التطبيق والتعليقات.
+- **الـ AI:** الاتصال بالـ provider بتاعك.
+
+نفس الفحص من الـ terminal:
+
+```bash
+docker compose exec worker node_modules/.bin/tsx ../../packages/core/src/cli/doctor.ts "https://apps.apple.com/tr/app/id1312926037"
+```
+
+**مشاكل شائعة:**
+
+| المشكلة                                          | السبب والحل                                                                                                                                                                                                               |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Reviews 0 لتطبيق App Store**                   | افتح التطبيق وشوف كارت **Last sync**. هتلاقي فيه أنهي مصدر اتجرب وإيه اللي رجع. المنصة بتجرب RSS feed الأول، ولو رجع فاضي أو اتقفل بتجرب الـ web API بتاع apps.apple.com. لو الاتنين فشلوا هتظهر رسالة الخطأ فوق التابات. |
+| **Reviews 0 لتطبيق Google Play**                 | جوجل بيرجّع التعليقات المكتوبة بلغة واحدة بس. غيّر **Review language** من Overview → Details، وهيتعمل sync تاني لوحده.                                                                                                    |
+| **الصفحات بطيئة**                                | شوف سطر **Database round trip** في الـ Diagnostics.                                                                                                                                                                       |
+| **الـ sync مابيبدأش ("Waiting for the worker")** | الـ worker واقف: `docker compose logs worker`.                                                                                                                                                                            |
+| **"will retry at …"**                            | خطأ مؤقت، زي إن المتجر رفض الطلب لحظيًا. الـ job هيتعاد لوحده لحد 3 مرات.                                                                                                                                                 |
+
 ### حدود لازم تعرفها
 
 - **Google Play مالوش API رسمي.** السحب بيتم بمكتبة `google-play-scraper`، ولو جوجل غيّرت الصفحة ممكن يقف لحد ما المكتبة تتحدث (`pnpm up google-play-scraper` وبعدين rebuild).
-- **الـ App Store** بيستخدم الـ iTunes Lookup/Search API الرسمية وفيد التعليقات RSS، وده بيدي 500 تعليق كحد أقصى لكل دولة.
+- **الـ App Store** بيستخدم الـ iTunes Lookup/Search API الرسمية وفيد التعليقات RSS، وده بيدي 500 تعليق كحد أقصى لكل دولة. لو الفيد فاضي أو اتقفل، المنصة بتستخدم الـ web API بتاع apps.apple.com. ده مش API رسمي موثق، فممكن يتغير.
 - **صور المتجر** صور تسويقية، مش شاشات التطبيق الحقيقية من جوه.
 - **المحتوى ملك أصحابه.** المنصة معمولة كمرجع شخصي ليك، مش لإعادة النشر.
 
@@ -160,9 +187,13 @@ db/migrations SQL schema, applied automatically
 
 The web app and the MCP server enqueue jobs in the `jobs` table; the worker claims them with `FOR UPDATE SKIP LOCKED`. All three share the `data/media` volume.
 
-**Sync pipeline** (per app): fetch listing → download icon and screenshots (content-addressed WebP, unchanged images are not re-downloaded) → upsert the latest N reviews → compare with the previous snapshot and record changes (name, description, release notes, price, version, icon, screenshots) → record the day's rating → queue AI analysis if new reviews arrived.
+**Sync pipeline** (per app): fetch listing → download icon and screenshots in parallel (content-addressed WebP, unchanged images are not re-downloaded) while reviews are fetched → batch-upsert the latest N reviews → compare with the previous snapshot and record changes (name, description, release notes, price, version, icon, screenshots) → record the day's rating → store a sync report on the app → queue AI analysis if new reviews arrived. Database writes are batched, so a sync costs a handful of round trips regardless of review count (`pnpm --filter @lens/core bench` measures it against any database).
 
-**AI analysis**: unanalysed reviews go to the configured model in batches of 40 and come back with sentiment, one of 11 fixed topics, and a short complaint/request label. A second call merges similar labels into the top complaints and requests and writes a short summary.
+**App Store reviews** come from the customer-reviews RSS feed; if it is empty or blocked, from the web API behind apps.apple.com (using the public token the site embeds). The sync report records which one was used.
+
+**Jobs** report live progress, retry transient failures (timeouts, 429, 5xx, network) up to 3 times with backoff, and run two at a time without ever syncing the same app twice. A job interrupted by a restart is requeued on the next start.
+
+**AI analysis**: unanalysed reviews go to the configured model in batches of 40 (three in parallel) and come back with sentiment, one of 11 fixed topics, and a short complaint/request label. A second call merges similar labels into the top complaints and requests and writes a short summary.
 
 ### MCP tools
 
@@ -202,6 +233,7 @@ pnpm format:check
 pnpm typecheck
 TEST_DATABASE_URL=postgres://postgres:lens@localhost:5433/lens_test pnpm test   # the test database is wiped
 node apps/mcp/test/smoke.mjs http://localhost:3001/mcp $MCP_TOKEN              # needs seeded data
+pnpm doctor "<store link>"                                                     # live checks against the stores
 ```
 
 Adding shadcn components: `cd apps/web && npx shadcn@latest add <component>` (see `components.json`).
@@ -218,6 +250,9 @@ Adding shadcn components: `cd apps/web && npx shadcn@latest add <component>` (se
 | `BASIC_AUTH_USER`, `BASIC_AUTH_PASSWORD` | web           | Optional extra login                                                                                           |
 | `CLOUDFLARE_TUNNEL_TOKEN`                | cloudflared   | Only with `--profile tunnel`                                                                                   |
 | `DATABASE_BACKUP_URL`                    | backup script | Session-pooler URL for `pg_dump`                                                                               |
+| `DATABASE_POOL_SIZE`                     | all           | Connections per process (default 10)                                                                           |
+| `WORKER_CONCURRENCY`                     | worker        | Jobs run at once (default 2)                                                                                   |
+| `WORKER_JOB_TIMEOUT_MS`                  | worker        | A job running longer is failed and retried (default 15 min)                                                    |
 
 ### Using a local database instead of Supabase
 

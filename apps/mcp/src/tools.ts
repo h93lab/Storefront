@@ -112,6 +112,7 @@ export function buildServer() {
         status: a.status,
         last_error: a.last_error,
         last_synced_at: a.last_synced_at,
+        last_sync: a.sync_report,
         url: appLink(a.id),
         insights: ins
           ? { sentiment: ins.sentiment, top_complaints: ins.complaints, top_requests: ins.requests, summary: ins.summary }
@@ -307,7 +308,12 @@ export function buildServer() {
       inputSchema: {
         link_or_id: z.string().describe("App Store / Google Play link, iOS numeric id, or Android package name"),
         country: z.string().length(2).optional().describe("Storefront country, e.g. US or EG. Defaults to the link's country or US."),
-        lang: z.string().min(2).max(5).optional().describe("Review language for Google Play, e.g. en or ar"),
+        lang: z
+          .string()
+          .min(2)
+          .max(5)
+          .optional()
+          .describe("Review language for Google Play, e.g. en or ar. Defaults to the country's main language."),
       },
       annotations: { openWorldHint: true },
     },
@@ -318,7 +324,7 @@ export function buildServer() {
         store: parsed.store,
         storeId: parsed.storeId,
         country: country ?? parsed.country ?? "us",
-        lang: lang ?? parsed.lang ?? "en",
+        lang: lang ?? parsed.lang ?? undefined,
       })
       return json({ app_id: row.id, created: row.created, status: "sync queued", url: appLink(row.id) })
     },

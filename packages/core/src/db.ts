@@ -20,7 +20,7 @@ export function db(): Sql {
     client = postgres(url, {
       prepare: false,
       ssl: sslFor(url),
-      max: Number(process.env.DATABASE_POOL_SIZE ?? 5),
+      max: Number(process.env.DATABASE_POOL_SIZE ?? 10),
       idle_timeout: 20,
       onnotice: () => {},
     })
@@ -32,5 +32,20 @@ export async function closeDb() {
   if (client) {
     await client.end({ timeout: 5 })
     client = undefined
+  }
+}
+
+/** Waits until the database accepts connections (after a reboot the container can start first). */
+export async function waitForDb(log: (msg: string) => void = console.log, timeoutMs = 120_000) {
+  const started = Date.now()
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await db()`select 1`
+      return
+    } catch (e) {
+      if (Date.now() - started > timeoutMs) throw e
+      log(`database not reachable yet (${(e as Error).message}), retrying`)
+      await new Promise((r) => setTimeout(r, Math.min(2000 * attempt, 10_000)))
+    }
   }
 }

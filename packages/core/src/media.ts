@@ -38,7 +38,8 @@ export async function storeImage(bytes: Buffer, folder: string, opts: { maxWidth
     .resize({ width: opts.maxWidth ?? 1290, withoutEnlargement: true })
     .webp({ quality: 82 })
     .toBuffer({ resolveWithObject: true })
-  const tmp = `${abs}.${process.pid}.tmp`
+  // Unique temp name: the same image can be stored twice at once (two URLs, same bytes).
+  const tmp = `${abs}.${crypto.randomUUID()}.tmp`
   await fs.writeFile(tmp, data)
   await fs.rename(tmp, abs)
   return { hash, path: rel, width: info.width, height: info.height }

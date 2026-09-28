@@ -39,16 +39,21 @@ const JOB_COLS = "id::text, type, payload, status, result, error, attempts, prog
  */
 export async function claimJob(): Promise<Job | null> {
   const sql = db()
-  const [job] = await sql<Job[]>`
-    update jobs set status = 'running', started_at = now(), attempts = attempts + 1, progress = null
-    where id = (
-      select q.id from jobs q
-      where q.status = 'queued' and q.run_after <= now()
-        and not (q.payload ? 'appId' and exists (
-          select 1 from jobs r where r.status = 'running' and r.payload->>'appId' = q.payload->>'appId'))
-      order by q.id for update skip locked limit 1)
-    returning ${sql.unsafe(JOB_COLS)}`
-  return job ?? null
+  // Claims are serialized: otherwise two workers could each miss the other's
+  // uncommitted claim and pick up two jobs for the same app.
+  return sql.begin(async (tx) => {
+    await tx`select pg_advisory_xact_lock(724302)`
+    const [job] = await tx<Job[]>`
+      update jobs set status = 'running', started_at = now(), attempts = attempts + 1, progress = null
+      where id = (
+        select q.id from jobs q
+        where q.status = 'queued' and q.run_after <= now()
+          and not (q.payload ? 'appId' and exists (
+            select 1 from jobs r where r.status = 'running' and r.payload->>'appId' = q.payload->>'appId'))
+        order by q.id for update skip locked limit 1)
+      returning ${tx.unsafe(JOB_COLS)}`
+    return job ?? null
+  })
 }
 
 export async function setJobProgress(id: string, progress: string) {
@@ -71,6 +76,7 @@ export async function retryJob(id: string, error: string, delayMs: number) {
 
 /** Network-level failures worth retrying (as opposed to "app not found"). */
 export const isTransient = (message: string) =>
+  !/^Job timed out/.test(message) &&
   /timed out|timeout|HTTP (408|425|429|5\d\d)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|fetch failed|socket hang up|network/i.test(
     message,
   )

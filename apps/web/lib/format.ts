@@ -21,10 +21,17 @@ export const COUNTRIES: [string, string][] = [
 export const LANGUAGES: [string, string][] = [
   ["en", "English"],
   ["ar", "Arabic"],
+  ["tr", "Turkish"],
   ["fr", "French"],
   ["de", "German"],
   ["es", "Spanish"],
-  ["tr", "Turkish"],
+  ["pt", "Portuguese"],
+  ["it", "Italian"],
+  ["ru", "Russian"],
+  ["ja", "Japanese"],
+  ["ko", "Korean"],
+  ["id", "Indonesian"],
+  ["nl", "Dutch"],
 ]
 
 export const storeLabel = (s: string) => (s === "ios" ? "App Store" : "Google Play")
@@ -79,4 +86,5 @@ export const FIELD_LABELS: Record<string, string> = {
   release_notes: "Release notes",
 }
 
-export const mediaSrc = (p: string | null | undefined) => (p ? `/media/${p}` : null)
+/** URL of a stored image; pass a width (240, 480, 960) for a cached thumbnail. */
+export const mediaSrc = (p: string | null | undefined, w?: 240 | 480 | 960) => (p ? `/media/${p}${w ? `?w=${w}` : ""}` : null)

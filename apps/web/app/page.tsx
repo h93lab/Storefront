@@ -1,8 +1,8 @@
 import Link from "next/link"
 import { ChevronRight, CircleCheck, CircleX, LoaderCircle } from "lucide-react"
-import { dashboardStats, getChanges, recentJobs } from "@lens/core"
+import { activeJobs, dashboardStats, getChanges, recentJobs } from "@lens/core"
 import { AppIcon } from "@/components/app-icon"
-import { AutoRefresh } from "@/components/auto-refresh"
+import { JobWatcher } from "@/components/job-watcher"
 import { ReviewsPerDayChart } from "@/components/charts"
 import { PageHeader } from "@/components/page-header"
 import { StatCard } from "@/components/stat-card"
@@ -18,8 +18,8 @@ import { AddAppDialog } from "@/components/add-app-dialog"
 const JOB_LABEL: Record<string, string> = { sync_app: "Sync app", sync_all: "Sync all apps", analyse_app: "Analyse reviews" }
 
 export default async function DashboardPage() {
-  const [stats, changes, jobs] = await Promise.all([dashboardStats(), getChanges({ limit: 6 }), recentJobs(8)])
-  const busy = jobs.some((j) => j.status === "queued" || j.status === "running")
+  const [stats, changes, jobs, active] = await Promise.all([dashboardStats(), getChanges({ limit: 6 }), recentJobs(8), activeJobs()])
+  const busy = active.length > 0
 
   if (!stats.apps) {
     return (
@@ -49,12 +49,12 @@ export default async function DashboardPage() {
 
   return (
     <>
-      <AutoRefresh active={busy} />
+      <JobWatcher variant="none" initial={active.map((j) => ({ ...j, run_after: new Date(j.run_after).toISOString() }))} />
       <PageHeader title="Dashboard" description="What happened across your tracked apps since the last sync.">
         <SyncButton label="Sync all now" busy={busy} />
       </PageHeader>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
         <StatCard
           label="Apps tracked"
           value={stats.apps}

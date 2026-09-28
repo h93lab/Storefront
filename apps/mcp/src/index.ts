@@ -1,6 +1,7 @@
 import crypto from "node:crypto"
 import http from "node:http"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
+import { waitForDb } from "@lens/core"
 import { migrate } from "@lens/core/migrate"
 import { buildServer } from "./tools"
 
@@ -84,6 +85,7 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
+await waitForDb((m) => console.log(m))
 await migrate(() => {})
 server.listen(PORT, () => console.log(`MCP server listening on :${PORT}/mcp`))
 process.on("unhandledRejection", (e) => console.error("unhandled rejection", e))

@@ -1,7 +1,7 @@
 import type { Metadata } from "next"
 import { GeistMono } from "geist/font/mono"
 import { GeistSans } from "geist/font/sans"
-import { listApps, listBoards } from "@lens/core"
+import { navSummary } from "@lens/core"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SiteHeader } from "@/components/site-header"
 import { ThemeProvider } from "@/components/theme-provider"
@@ -19,18 +19,17 @@ export const metadata: Metadata = {
 }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const [apps, boards] = await Promise.all([listApps(), listBoards()])
-  const appOptions = apps.map((a) => ({ id: a.id, name: a.name || a.store_id, store: a.store, icon: a.icon_path }))
+  const nav = await navSummary()
   return (
     <html lang="en" suppressHydrationWarning className={`${GeistSans.variable} ${GeistMono.variable}`}>
       <body className="font-sans">
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
           <TooltipProvider delayDuration={200}>
             <SidebarProvider>
-              <AppSidebar appCount={apps.length} boardCount={boards.length} />
+              <AppSidebar appCount={nav.apps.length} boardCount={nav.boards} />
               <SidebarInset>
-                <SiteHeader apps={appOptions} />
-                <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 p-4 md:p-6">{children}</main>
+                <SiteHeader apps={nav.apps} />
+                <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 p-4 md:p-6">{children}</div>
               </SidebarInset>
             </SidebarProvider>
             <Toaster position="bottom-right" />

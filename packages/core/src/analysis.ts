@@ -83,7 +83,13 @@ export interface AnalyseResult {
  */
 export async function analyseApp(
   appId: string,
-  opts: { batchSize?: number; concurrency?: number; log?: (m: string) => void; onProgress?: (m: string) => void } = {},
+  opts: {
+    batchSize?: number
+    concurrency?: number
+    log?: (m: string) => void
+    onProgress?: (m: string) => void
+    signal?: AbortSignal
+  } = {},
 ): Promise<AnalyseResult> {
   const settings = await getSettings()
   if (!aiConfigured(settings)) throw new Error("AI provider is not configured. Add a base URL and model in Settings.")
@@ -101,20 +107,26 @@ export async function analyseApp(
   let classified = 0
   let done = 0
   const batches = Array.from({ length: Math.ceil(pending.length / batchSize) }, (_, i) => pending.slice(i * batchSize, (i + 1) * batchSize))
-  await mapLimit(batches, opts.concurrency ?? 3, async (batch) => {
-    const items = await classifyBatch(settings.ai, batch)
-    if (items.length) {
-      await sql`
+  await mapLimit(
+    batches,
+    opts.concurrency ?? 3,
+    async (batch) => {
+      const items = await classifyBatch(settings.ai, batch)
+      if (items.length) {
+        await sql`
         update reviews r set sentiment = v.sentiment, topic = v.topic, label = nullif(v.label, ''), label_kind = v.kind, analysed_at = now()
         from unnest(${items.map((i) => i.id)}::text[], ${items.map((i) => i.sentiment)}::text[], ${items.map((i) => i.topic)}::text[],
                     ${items.map((i) => i.label)}::text[], ${items.map((i) => i.kind)}::text[]) as v(id, sentiment, topic, label, kind)
         where r.app_id = ${appId} and r.review_id = v.id`
-    }
-    classified += items.length
-    done += batch.length
-    log(`classified ${classified}/${pending.length}`)
-    opts.onProgress?.(`Analysing reviews ${done}/${pending.length}`)
-  })
+      }
+      classified += items.length
+      done += batch.length
+      log(`classified ${classified}/${pending.length}`)
+      opts.onProgress?.(`Analysing reviews ${done}/${pending.length}`)
+    },
+    opts.signal,
+  )
+  opts.signal?.throwIfAborted()
 
   opts.onProgress?.("Summarising complaints and requests")
   const recent = sql`select * from reviews where app_id = ${appId} and analysed_at is not null order by reviewed_at desc nulls last limit ${limit}`

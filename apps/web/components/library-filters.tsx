@@ -11,6 +11,7 @@ export function useUrlState() {
   const router = useRouter()
   const pathname = usePathname()
   const params = useSearchParams()
+  const [pending, start] = React.useTransition()
   const set = React.useCallback(
     (patch: Record<string, string | null>) => {
       const next = new URLSearchParams(params.toString())
@@ -19,11 +20,11 @@ export function useUrlState() {
         else next.set(k, v)
       }
       const qs = next.toString()
-      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+      start(() => router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false }))
     },
     [params, pathname, router],
   )
-  return { params, set }
+  return { params, set, pending }
 }
 
 export function DebouncedSearch({ param = "q", placeholder, className }: { param?: string; placeholder: string; className?: string }) {
@@ -49,31 +50,46 @@ export function DebouncedSearch({ param = "q", placeholder, className }: { param
   )
 }
 
-export function LibraryFilters({ categories }: { categories: string[] }) {
-  const { params, set } = useUrlState()
+export function LibraryFilters({
+  categories,
+  children,
+  controls = true,
+}: {
+  categories: string[]
+  children: React.ReactNode
+  controls?: boolean
+}) {
+  const { params, set, pending } = useUrlState()
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <DebouncedSearch placeholder="Search your library…" />
-      <Tabs value={params.get("store") ?? "all"} onValueChange={(v) => set({ store: v })}>
-        <TabsList>
-          <TabsTrigger value="all">All</TabsTrigger>
-          <TabsTrigger value="ios">App Store</TabsTrigger>
-          <TabsTrigger value="android">Google Play</TabsTrigger>
-        </TabsList>
-      </Tabs>
-      <Select value={params.get("category") ?? "all"} onValueChange={(v) => set({ category: v })}>
-        <SelectTrigger className="w-48" aria-label="Category">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">All categories</SelectItem>
-          {categories.map((c) => (
-            <SelectItem key={c} value={c}>
-              {c}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
+    <>
+      {controls && (
+        <div className="flex flex-wrap items-center gap-2">
+          <DebouncedSearch placeholder="Search your library…" />
+          <Tabs value={params.get("store") ?? "all"} onValueChange={(v) => set({ store: v })}>
+            <TabsList>
+              <TabsTrigger value="all">All</TabsTrigger>
+              <TabsTrigger value="ios">App Store</TabsTrigger>
+              <TabsTrigger value="android">Google Play</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <Select value={params.get("category") ?? "all"} onValueChange={(v) => set({ category: v })}>
+            <SelectTrigger className="w-48" aria-label="Category">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All categories</SelectItem>
+              {categories.map((c) => (
+                <SelectItem key={c} value={c}>
+                  {c}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+      <div aria-busy={pending} className={pending ? "pointer-events-none opacity-50 transition-opacity" : "transition-opacity"}>
+        {children}
+      </div>
+    </>
   )
 }

@@ -13,6 +13,8 @@ export interface SyncDeps {
   /** Human-readable progress, e.g. "Downloading screenshots 4/20". */
   onProgress?: (message: string) => void
   imageConcurrency?: number
+  /** Aborts the sync between steps (the worker uses it to enforce its job timeout). */
+  signal?: AbortSignal
 }
 
 export interface SyncResult {
@@ -39,11 +41,17 @@ interface AppRow {
 }
 
 /** Runs `fn` over `items` with at most `limit` in flight, preserving order. */
-export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+export async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+  signal?: AbortSignal,
+): Promise<R[]> {
   const out = new Array<R>(items.length)
   let next = 0
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (next < items.length) {
+      signal?.throwIfAborted()
       const i = next++
       out[i] = await fn(items[i], i)
     }
@@ -63,7 +71,9 @@ export async function syncApp(appId: string, deps: SyncDeps = {}): Promise<SyncR
   const started = Date.now()
   const sql = db()
   const log = deps.log ?? (() => {})
+  const signal = deps.signal
   const progress = (m: string) => {
+    signal?.throwIfAborted()
     log(m)
     deps.onProgress?.(m)
   }
@@ -108,10 +118,11 @@ export async function syncApp(appId: string, deps: SyncDeps = {}): Promise<SyncR
 
     // Icon + screenshots, downloaded in parallel. Known source URLs are skipped.
     const known = new Map(
-      (await sql<{ source_url: string; hash: string }[]>`select source_url, hash from screenshots where app_id = ${appId}`).map((r) => [
-        r.source_url,
-        r.hash,
-      ]),
+      (
+        await sql<{ url: string; hash: string }[]>`
+          select source_url as url, hash from screenshots where app_id = ${appId}
+          union all select unnest(alt_urls), hash from screenshots where app_id = ${appId}`
+      ).map((r) => [r.url, r.hash]),
     )
     const toDownload = listing.screenshots.filter((s) => !known.has(s.url))
     let downloaded = 0
@@ -138,6 +149,7 @@ export async function syncApp(appId: string, deps: SyncDeps = {}): Promise<SyncR
           }
         }
       },
+      signal,
     )
     if (icon instanceof Error) warn(`Icon download failed: ${icon.message}`)
     const iconImg = icon instanceof Error ? null : icon
@@ -154,6 +166,7 @@ export async function syncApp(appId: string, deps: SyncDeps = {}): Promise<SyncR
       active: boolean
     }[] = []
     let failedScreenshots = 0
+    const downloadedPairs: { url: string; hash: string }[] = []
     toDownload.forEach((shot, i) => {
       const img = images[i]
       if (img instanceof Error || !img) {
@@ -162,6 +175,7 @@ export async function syncApp(appId: string, deps: SyncDeps = {}): Promise<SyncR
         return
       }
       known.set(shot.url, img.hash)
+      downloadedPairs.push({ url: shot.url, hash: img.hash })
       // The same image can appear under two URLs (e.g. iPhone and iPad); store it once.
       if (newRows.some((r) => r.hash === img.hash)) return
       newRows.push({
@@ -178,11 +192,19 @@ export async function syncApp(appId: string, deps: SyncDeps = {}): Promise<SyncR
     })
     let newScreenshots = 0
     if (newRows.length) {
-      const inserted = await sql<{ inserted: boolean }[]>`
+      const inserted = await sql`
         insert into screenshots ${sql(newRows)}
-        on conflict (app_id, hash) do update set source_url = excluded.source_url
-        returning (xmax = 0) as inserted`
-      newScreenshots = inserted.filter((r) => r.inserted).length
+        on conflict (app_id, hash) do nothing
+        returning 1`
+      newScreenshots = inserted.length
+    }
+    // Remember every URL an image was seen under, so identical images listed
+    // twice (e.g. iPhone and iPad) are not downloaded again on the next sync.
+    if (downloadedPairs.length) {
+      await sql`
+        update screenshots s set alt_urls = array_append(s.alt_urls, v.url)
+        from unnest(${downloadedPairs.map((p) => p.url)}::text[], ${downloadedPairs.map((p) => p.hash)}::text[]) as v(url, hash)
+        where s.app_id = ${appId} and s.hash = v.hash and s.source_url <> v.url and not (v.url = any(s.alt_urls))`
     }
     const current: string[] = []
     for (const s of listing.screenshots) {
@@ -203,6 +225,7 @@ export async function syncApp(appId: string, deps: SyncDeps = {}): Promise<SyncR
     }
 
     // Reviews
+    signal?.throwIfAborted()
     const rev = await reviewsPromise
     let newReviews = 0
     let reviewsFetched = 0

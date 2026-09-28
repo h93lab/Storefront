@@ -25,3 +25,14 @@ describe("AI helpers", () => {
     expect(normaliseItem({})).toBeNull()
   })
 })
+
+describe("AI provider errors", () => {
+  it("explains unreachable hosts and bad URLs", async () => {
+    const { chat } = await import("../src/ai")
+    const cfg = { baseUrl: "http://127.0.0.1:59999/v1", model: "m", apiKey: "", autoAnalyse: true }
+    await expect(chat(cfg, [{ role: "user", content: "hi" }])).rejects.toThrow(
+      /Could not reach the AI provider at 127\.0\.0\.1:59999 \(ECONNREFUSED\)/,
+    )
+    await expect(chat({ ...cfg, baseUrl: "not a url" }, [{ role: "user", content: "hi" }])).rejects.toThrow(/not a valid URL/)
+  })
+})

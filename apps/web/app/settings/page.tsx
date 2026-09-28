@@ -3,6 +3,7 @@ import type { Metadata } from "next"
 import { Cron } from "croner"
 import { env, getSettings, mediaUsageBytes } from "@lens/core"
 import { CopyButton } from "@/components/copy-button"
+import { DiagnosticsPanel } from "@/components/diagnostics-panel"
 import { PageHeader } from "@/components/page-header"
 import { AiSettingsForm, SyncSettingsForm } from "@/components/settings-forms"
 import { Badge } from "@/components/ui/badge"
@@ -64,7 +65,17 @@ export default async function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" description="AI provider, MCP access and sync schedule." />
+      <PageHeader title="Settings" description="AI provider, MCP access, sync schedule and diagnostics." />
+
+      <Card id="diagnostics" className="scroll-mt-20">
+        <CardHeader>
+          <CardTitle>Diagnostics</CardTitle>
+          <CardDescription>
+            Checks the database, the worker, image storage, both stores and your AI provider from this server.
+          </CardDescription>
+        </CardHeader>
+        <DiagnosticsPanel />
+      </Card>
 
       <Card>
         <CardHeader>

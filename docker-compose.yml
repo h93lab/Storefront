@@ -6,6 +6,11 @@
 x-app: &app
   env_file: .env
   restart: unless-stopped
+  # Only applies with --profile localdb; with Supabase the db service does not exist.
+  depends_on:
+    db:
+      condition: service_healthy
+      required: false
   volumes:
     - ./data/media:/data/media
   environment:
@@ -29,7 +34,12 @@ services:
   mcp:
     <<: *app
     image: storefront-lens-service
-    depends_on: [worker]
+    depends_on:
+      worker:
+        condition: service_started
+      db:
+        condition: service_healthy
+        required: false
     working_dir: /app/apps/mcp
     command: ["node_modules/.bin/tsx", "src/index.ts"]
     ports:

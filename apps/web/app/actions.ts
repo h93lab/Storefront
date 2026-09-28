@@ -10,6 +10,8 @@ import {
   getSettings,
   parseStoreUrl,
   removeApp,
+  runDiagnostics,
+  type Check,
   removeBoardItem,
   saveSettings,
   testConnection,
@@ -35,7 +37,7 @@ export async function addAppAction(input: { link: string; country?: string; lang
       store: parsed.store,
       storeId: parsed.storeId,
       country: input.country || parsed.country || "us",
-      lang: input.lang || parsed.lang || "en",
+      lang: input.lang || parsed.lang || undefined,
     })
     revalidatePath("/", "layout")
     return row
@@ -149,4 +151,18 @@ export async function saveSyncSettingsAction(input: { cron: string; reviewsPerAp
     await saveSettings("sync", { cron: input.cron.trim(), reviewsPerApp: n })
     revalidatePath("/settings")
   }, "Sync settings saved. The worker picks them up within a minute.")
+}
+
+export async function runDiagnosticsAction(link?: string): Promise<ActionResult<Check[]>> {
+  return run(() => runDiagnostics(link?.trim() || undefined))
+}
+
+export async function setAppLanguageAction(appId: string, lang: string) {
+  return run(async () => {
+    if (!/^[a-z]{2,3}$/.test(lang)) throw new Error("Pick a language from the list.")
+    const { db } = await import("@lens/core")
+    await db()`update apps set lang = ${lang} where id = ${appId}`
+    await enqueue("sync_app", { appId })
+    revalidatePath(`/apps/${appId}`)
+  }, "Review language changed. A sync was queued to fetch reviews in that language.")
 }
