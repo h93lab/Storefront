@@ -27,7 +27,7 @@ const call = async (name, args = {}) => {
 }
 const { data: apps } = await call("search_library")
 assert(apps.length > 0, `search_library returns ${apps.length} apps`)
-const id = apps[0].app_id
+const id = apps.find((a) => a.status === "ready").app_id
 const { data: app } = await call("get_app", { app_id: id })
 assert(app.name && app.description, `get_app returns ${app.name}`)
 const { data: shots } = await call("get_screenshots", { app_id: id, include_previous: true })
@@ -40,7 +40,12 @@ const { data: ins } = await call("get_insights", { app_id: id })
 assert(ins.complaints.length > 0, "get_insights returns complaints")
 const { data: ch } = await call("get_changes", { days: 30 })
 assert(ch.length > 0, `get_changes returns ${ch.length} changes`)
-const { data: cmp } = await call("compare_apps", { app_ids: apps.slice(0, 2).map((a) => a.app_id) })
+const { data: cmp } = await call("compare_apps", {
+  app_ids: apps
+    .filter((a) => a.status === "ready")
+    .slice(0, 2)
+    .map((a) => a.app_id),
+})
 assert(cmp.length === 2, "compare_apps compares two apps")
 const { data: board } = await call("create_board", { name: "Smoke board" })
 const { data: saved } = await call("save_to_board", { board_id: board.board_id, screenshot_id: shots[0].screenshot_id, note: "from smoke" })

@@ -1,0 +1,64 @@
+# Storefront Lens — self-hosted stack.
+#   docker compose up -d --build                  web + worker + MCP (database: Supabase Cloud)
+#   docker compose --profile tunnel up -d         also run the Cloudflare Tunnel
+#   docker compose --profile localdb up -d        use a local Postgres instead of Supabase
+
+x-app: &app
+  env_file: .env
+  restart: unless-stopped
+  volumes:
+    - ./data/media:/data/media
+  environment:
+    MEDIA_DIR: /data/media
+
+services:
+  web:
+    <<: *app
+    build: { context: ., target: web }
+    image: storefront-lens-web
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+
+  worker:
+    <<: *app
+    build: { context: ., target: service }
+    image: storefront-lens-service
+    working_dir: /app/apps/worker
+    command: ["node_modules/.bin/tsx", "src/index.ts"]
+
+  mcp:
+    <<: *app
+    image: storefront-lens-service
+    depends_on: [worker]
+    working_dir: /app/apps/mcp
+    command: ["node_modules/.bin/tsx", "src/index.ts"]
+    ports:
+      - "127.0.0.1:${MCP_PORT_HOST:-3001}:3001"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: [tunnel]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on: [web, mcp]
+
+  db:
+    image: postgres:16-alpine
+    profiles: [localdb]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lens
+      POSTGRES_USER: lens
+      POSTGRES_PASSWORD: ${LOCAL_DB_PASSWORD:-lens}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lens -d lens"]
+      interval: 10s

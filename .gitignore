@@ -10,3 +10,4 @@ coverage
 test-results
 tsconfig.tsbuildinfo
 next-env.d.ts
+backups/

@@ -2,7 +2,8 @@
  * Loads fictional demo apps so the UI can be explored without store access.
  * Uses the real sync pipeline with a fake store client. Safe to re-run.
  *   pnpm seed            add demo data
- *   pnpm seed --reset    remove demo apps first
+ *   pnpm seed --reset    remove demo apps first, then add them again
+ *   pnpm seed --remove   remove demo apps and stop
  */
 import sharp from "sharp"
 import { closeDb, db } from "../db"
@@ -109,17 +110,17 @@ function screenSvg(d: Demo, title: string) {
     <defs><linearGradient id="g" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs>
     <rect width="1170" height="2532" fill="#ffffff"/>
     <rect width="1170" height="880" fill="url(#g)"/>
-    <text x="80" y="420" font-family="Helvetica, Arial, sans-serif" font-size="92" font-weight="700" fill="#fff">${x(title)}</text>
-    <text x="80" y="540" font-family="Helvetica, Arial, sans-serif" font-size="46" fill="#ffffffcc">${x(d.name)}</text>
+    <text x="80" y="420" font-family="Geist, Helvetica, Arial, sans-serif" font-size="92" font-weight="700" fill="#fff">${x(title)}</text>
+    <text x="80" y="540" font-family="Geist, Helvetica, Arial, sans-serif" font-size="46" fill="#ffffffcc">${x(d.name)}</text>
     ${blocks}
     <rect x="60" y="2250" width="1050" height="150" rx="75" fill="${c1}"/>
-    <text x="585" y="2345" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="52" font-weight="600" fill="#fff">Continue</text>
+    <text x="585" y="2345" text-anchor="middle" font-family="Geist, Helvetica, Arial, sans-serif" font-size="52" font-weight="600" fill="#fff">Continue</text>
   </svg>`
 }
 
 function iconSvg(d: Demo) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="512" height="512" rx="112" fill="hsl(${d.hue} 70% 48%)"/>
-    <text x="256" y="330" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="260" font-weight="700" fill="#fff">${x(d.name[0])}</text></svg>`
+    <text x="256" y="330" text-anchor="middle" font-family="Geist, Helvetica, Arial, sans-serif" font-size="260" font-weight="700" fill="#fff">${x(d.name[0])}</text></svg>`
 }
 
 function listingFor(d: Demo, variant: number): StoreListing {
@@ -171,8 +172,14 @@ async function renderDemo(url: string): Promise<Buffer> {
 
 await migrate(() => {})
 const sql = db()
-if (process.argv.includes("--reset")) {
+if (process.argv.includes("--reset") || process.argv.includes("--remove")) {
   for (const a of await sql<{ id: string }[]>`select id from apps where store_id like 'demo.%'`) await removeApp(a.id)
+  await sql`delete from boards where name = 'Meditation app · Onboarding' and not exists (select 1 from board_items i where i.board_id = boards.id)`
+}
+if (process.argv.includes("--remove")) {
+  console.log("demo data removed")
+  await closeDb()
+  process.exit(0)
 }
 
 for (const d of DEMOS) {
