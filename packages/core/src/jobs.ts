@@ -15,11 +15,14 @@ export interface Job {
   finished_at: Date | null
 }
 
-/** Queues a job unless an identical one is already queued or running. */
+/**
+ * Queues a job unless an identical one is already waiting. A job that is
+ * currently running does not count: new work that arrives mid-run gets its own turn.
+ */
 export async function enqueue(type: JobType, payload: Record<string, unknown> = {}) {
   const sql = db()
   const [existing] = await sql<{ id: string }[]>`
-    select id::text from jobs where type = ${type} and payload = ${sql.json(payload as never)} and status in ('queued', 'running') limit 1`
+    select id::text from jobs where type = ${type} and payload = ${sql.json(payload as never)} and status = 'queued' limit 1`
   if (existing) return existing.id
   const [row] = await sql<{ id: string }[]>`
     insert into jobs (type, payload) values (${type}, ${sql.json(payload as never)}) returning id::text`
@@ -42,9 +45,23 @@ export async function failJob(id: string, error: string) {
   await db()`update jobs set status = 'failed', error = ${error.slice(0, 2000)}, finished_at = now() where id = ${id}`
 }
 
-/** Jobs left 'running' by a crashed worker go back to the queue. */
+export const MAX_ATTEMPTS = 3
+
+/**
+ * Jobs left 'running' by a stopped or crashed worker go back to the queue, or
+ * fail after MAX_ATTEMPTS. Pass minutes = 0 at worker startup (a single worker
+ * owns the queue, so anything still 'running' then was interrupted).
+ */
 export async function requeueStale(minutes = 30) {
-  await db()`update jobs set status = 'queued' where status = 'running' and started_at < now() - make_interval(mins => ${minutes})`
+  const sql = db()
+  const cutoff = sql`started_at <= now() - make_interval(mins => ${minutes})`
+  await sql`update jobs set status = 'failed', finished_at = now(), error = 'Interrupted too many times'
+    where status = 'running' and attempts >= ${MAX_ATTEMPTS} and ${cutoff}`
+  const requeued = await sql`update jobs set status = 'queued' where status = 'running' and ${cutoff} returning id`
+  // Apps whose sync was interrupted should not look busy forever.
+  await sql`update apps set status = case when last_synced_at is null then 'pending' else 'ready' end
+    where status = 'syncing' and not exists (select 1 from jobs where status = 'running' and type = 'sync_app' and payload->>'appId' = apps.id::text)`
+  return requeued.length
 }
 
 export async function recentJobs(limit = 20) {

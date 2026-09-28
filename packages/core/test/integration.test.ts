@@ -176,6 +176,33 @@ suite("pipeline", () => {
     expect((await core.dashboardStats()).changes_7d).toBe(3)
   })
 
+  it("does not record a partial screenshot download as a change", async () => {
+    const saved = listing
+    listing = { ...listing, screenshots: [5, 6, 2].map((i) => ({ url: `https://img/shot-${i}`, device: "phone" as const })) }
+    const flaky = (u: string) => (u.endsWith("shot-6") ? Promise.reject(new Error("HTTP 429")) : fetchImage(u))
+    const res = await core.syncApp(appId, { client: () => fakeClient, fetchImage: flaky, reviewsPerApp: 25 })
+    expect(res.warnings.join()).toMatch(/Screenshot 2 download failed/)
+    expect(res.changes).toEqual([])
+    expect((await core.getScreenshots(appId)).length).toBe(3) // previous set kept active
+    listing = saved
+    const clean = await core.syncApp(appId, { client: () => fakeClient, fetchImage, reviewsPerApp: 25 })
+    expect(clean.changes).toEqual([])
+  })
+
+  it("recovers jobs interrupted by a worker restart", async () => {
+    const id = await core.enqueue("sync_app", { appId })
+    const job = await core.claimJob()
+    expect(job?.id).toBe(id)
+    await core.db()`update apps set status = 'syncing' where id = ${appId}`
+    // while it runs, a new request gets its own queued job
+    const second = await core.enqueue("sync_app", { appId })
+    expect(second).not.toBe(id)
+    expect(await core.requeueStale(30)).toBe(0) // not stale yet
+    expect(await core.requeueStale(0)).toBe(1) // startup recovery
+    expect((await core.getApp(appId))!.status).toBe("ready")
+    await core.db()`delete from jobs`
+  })
+
   it("marks the app as errored when the store fails", async () => {
     const broken: StoreClient = {
       ...fakeClient,

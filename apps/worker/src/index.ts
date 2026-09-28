@@ -28,7 +28,8 @@ async function run(job: Job): Promise<string> {
   const appId = String(job.payload.appId ?? "")
   switch (job.type) {
     case "sync_all": {
-      const apps = await db()<{ id: string }[]>`select id from apps order by created_at`
+      // Demo apps from `pnpm seed` are not in any store.
+      const apps = await db()<{ id: string }[]>`select id from apps where store_id not like 'demo.%' order by created_at`
       for (const a of apps) await enqueue("sync_app", { appId: a.id })
       return `Queued ${apps.length} app${apps.length === 1 ? "" : "s"}`
     }
@@ -80,10 +81,14 @@ async function refreshSchedule() {
     const { sync } = await getSettings()
     if (sync.cron === scheduleExpr) return
     schedule?.stop()
-    schedule = new Cron(sync.cron, { timezone: env.timezone, protect: true }, async () => {
-      log("scheduled sync")
-      await enqueue("sync_all")
-    })
+    schedule = new Cron(
+      sync.cron,
+      { timezone: env.timezone, protect: true, catch: (e) => log("scheduled sync could not be queued", { error: String(e) }) },
+      async () => {
+        log("scheduled sync")
+        await enqueue("sync_all")
+      },
+    )
     scheduleExpr = sync.cron
     log("schedule set", { cron: sync.cron, timezone: env.timezone, next: schedule.nextRun()?.toISOString() })
   } catch (e) {
@@ -94,9 +99,13 @@ async function refreshSchedule() {
 async function main() {
   log("worker starting", { mediaDir: env.mediaDir })
   await migrate((m) => log(m))
-  await requeueStale()
+  const requeued = await requeueStale(0)
+  if (requeued) log("requeued interrupted jobs", { count: requeued })
   await refreshSchedule()
-  const timer = setInterval(refreshSchedule, 60_000)
+  const timer = setInterval(() => {
+    refreshSchedule()
+    requeueStale(30).catch((e) => log("requeue check failed", { error: String(e) }))
+  }, 60_000)
   const shutdown = async () => {
     if (stopping) return
     stopping = true
@@ -110,6 +119,8 @@ async function main() {
   await loop()
   await closeDb()
 }
+
+process.on("unhandledRejection", (e) => log("unhandled rejection", { error: e instanceof Error ? e.stack : String(e) }))
 
 main().catch((e) => {
   log("worker crashed", { error: e instanceof Error ? e.stack : String(e) })

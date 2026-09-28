@@ -25,7 +25,12 @@ function authorised(req: http.IncomingMessage, pathname: string) {
   const header = req.headers.authorization ?? ""
   if (header.startsWith("Bearer ") && safeEqual(header.slice(7).trim(), TOKEN)) return true
   const m = pathname.match(/^\/mcp\/([^/]+)$/)
-  return Boolean(m && safeEqual(decodeURIComponent(m[1]), TOKEN))
+  if (!m) return false
+  try {
+    return safeEqual(decodeURIComponent(m[1]), TOKEN)
+  } catch {
+    return false // malformed percent-encoding
+  }
 }
 
 async function readBody(req: http.IncomingMessage) {
@@ -81,4 +86,5 @@ const server = http.createServer(async (req, res) => {
 
 await migrate(() => {})
 server.listen(PORT, () => console.log(`MCP server listening on :${PORT}/mcp`))
+process.on("unhandledRejection", (e) => console.error("unhandled rejection", e))
 for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => server.close(() => process.exit(0)))

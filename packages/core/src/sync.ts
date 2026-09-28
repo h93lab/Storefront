@@ -45,6 +45,9 @@ export async function syncApp(appId: string, deps: SyncDeps = {}): Promise<SyncR
 
   const [app] = await sql<AppRow[]>`select id, store, store_id, country, lang from apps where id = ${appId}`
   if (!app) throw new Error(`App ${appId} does not exist`)
+  if (app.store_id.startsWith("demo.") && !deps.client) {
+    throw new Error("Demo app from `pnpm seed`: it is not in any store, so there is nothing to sync.")
+  }
   const ref = { store: app.store, storeId: app.store_id, country: app.country, lang: app.lang }
   const client = clientFor(app.store)
   await sql`update apps set status = 'syncing' where id = ${appId}`
@@ -75,6 +78,7 @@ export async function syncApp(appId: string, deps: SyncDeps = {}): Promise<SyncR
     )
     const current: string[] = []
     let newScreenshots = 0
+    let failedScreenshots = 0
     for (const [position, shot] of listing.screenshots.entries()) {
       let hash = known.get(shot.url)
       if (!hash) {
@@ -82,19 +86,23 @@ export async function syncApp(appId: string, deps: SyncDeps = {}): Promise<SyncR
           const img = await storeImage(await fetchImage(shot.url), `${appId}/screens`)
           hash = img.hash
           const inserted = await sql`
-            insert into screenshots (app_id, hash, path, source_url, width, height, position, device)
-            values (${appId}, ${img.hash}, ${img.path}, ${shot.url}, ${img.width}, ${img.height}, ${position}, ${shot.device})
+            insert into screenshots (app_id, hash, path, source_url, width, height, position, device, active)
+            values (${appId}, ${img.hash}, ${img.path}, ${shot.url}, ${img.width}, ${img.height}, ${position}, ${shot.device}, false)
             on conflict (app_id, hash) do update set source_url = excluded.source_url
             returning (xmax = 0) as inserted`
           if (inserted[0]?.inserted) newScreenshots++
         } catch (e) {
           warn(`Screenshot ${position + 1} download failed: ${(e as Error).message}`)
+          failedScreenshots++
           continue
         }
       }
       if (!current.includes(hash)) current.push(hash)
     }
-    if (current.length) {
+    // A partial download is not a store change: keep the previous set until a clean
+    // run (on the very first sync, show whatever did download).
+    const screenshotsComplete = failedScreenshots === 0
+    if (current.length && (screenshotsComplete || known.size === 0)) {
       await sql`update screenshots set active = false where app_id = ${appId} and hash <> all(${current})`
       for (const [position, hash] of current.entries()) {
         await sql`update screenshots set active = true, position = ${position}, last_seen_at = now() where app_id = ${appId} and hash = ${hash}`
@@ -122,16 +130,16 @@ export async function syncApp(appId: string, deps: SyncDeps = {}): Promise<SyncR
     }
 
     // Snapshot + change detection
+    const [prev] = await sql<{ data: SnapshotData }[]>`select data from snapshots where app_id = ${appId} order by taken_at desc limit 1`
     const snapshot: SnapshotData = {
       name: listing.name,
       description: listing.description,
       releaseNotes: listing.releaseNotes,
       price: listing.price,
       version: listing.version,
-      iconHash,
-      screenshots: current,
+      iconHash: iconHash ?? prev?.data.iconHash ?? null,
+      screenshots: screenshotsComplete || !prev ? current : prev.data.screenshots,
     }
-    const [prev] = await sql<{ data: SnapshotData }[]>`select data from snapshots where app_id = ${appId} order by taken_at desc limit 1`
     const changes = prev ? diffSnapshots(prev.data, snapshot) : []
     for (const c of changes) {
       await sql`insert into changes (app_id, field, old_value, new_value, summary)
@@ -160,7 +168,7 @@ export async function syncApp(appId: string, deps: SyncDeps = {}): Promise<SyncR
 
     return {
       name: listing.name,
-      screenshots: current.length,
+      screenshots: screenshotsComplete ? current.length : snapshot.screenshots.length,
       newScreenshots,
       newReviews,
       changes: changes.map((c) => c.summary),

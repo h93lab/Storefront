@@ -104,9 +104,13 @@ export async function removeBoardItemAction(itemId: string) {
 
 export async function saveAiSettingsAction(input: { baseUrl: string; apiKey?: string; model: string; autoAnalyse: boolean }) {
   return run(async () => {
-    const patch: Record<string, unknown> = { baseUrl: input.baseUrl.trim(), model: input.model.trim(), autoAnalyse: input.autoAnalyse }
-    // An empty key field means "keep the saved key".
+    const saved = (await getSettings()).ai
+    const baseUrl = input.baseUrl.trim()
+    const patch: Record<string, unknown> = { baseUrl, model: input.model.trim(), autoAnalyse: input.autoAnalyse }
+    // An empty key field keeps the saved key, but only for the same provider:
+    // never send a saved key to a different host.
     if (input.apiKey) patch.apiKey = input.apiKey.trim()
+    else if (baseUrl !== saved.baseUrl) patch.apiKey = ""
     await saveSettings("ai", patch)
     revalidatePath("/settings")
   }, "AI settings saved")
