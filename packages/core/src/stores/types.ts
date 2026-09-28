@@ -56,7 +56,10 @@ export interface StoreClient {
 }
 
 export class StoreError extends Error {
-  constructor(message: string, readonly status?: number) {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
     super(message)
     this.name = "StoreError"
   }

@@ -15,7 +15,9 @@ const url = process.env.TEST_DATABASE_URL
 const suite = url ? describe : describe.skip
 
 const png = (hue: number) =>
-  sharp({ create: { width: 390, height: 844, channels: 3, background: { r: hue, g: 120, b: 255 - hue } } }).png().toBuffer()
+  sharp({ create: { width: 390, height: 844, channels: 3, background: { r: hue, g: 120, b: 255 - hue } } })
+    .png()
+    .toBuffer()
 
 let listing: StoreListing
 let reviews: StoreReview[]
@@ -43,7 +45,7 @@ suite("pipeline", () => {
     core = await import("../src/index")
     const sql = core.db()
     await sql.unsafe("drop schema public cascade; create schema public;")
-    await core.migrate(() => {})
+    await (await import("../src/migrate")).migrate(() => {})
 
     // Fake OpenAI-compatible provider: classifies by rating, clusters by echoing.
     aiServer = http.createServer(async (req, res) => {
@@ -102,15 +104,33 @@ suite("pipeline", () => {
 
   it("syncs listing, images and reviews", async () => {
     listing = {
-      storeId: "571800810", name: "Calm", developer: "Calm.com, Inc.", category: "Health & Fitness",
-      description: "Sleep better.", releaseNotes: "Bug fixes", price: "Free", priceValue: 0, currency: "USD",
-      rating: 4.8, ratingsCount: 1_900_000, version: "6.52", updatedAt: new Date("2026-09-22"), sizeBytes: 250_000_000,
-      contentRating: "4+", url: "https://apps.apple.com/eg/app/calm/id571800810", iconUrl: "https://img/icon-9",
+      storeId: "571800810",
+      name: "Calm",
+      developer: "Calm.com, Inc.",
+      category: "Health & Fitness",
+      description: "Sleep better.",
+      releaseNotes: "Bug fixes",
+      price: "Free",
+      priceValue: 0,
+      currency: "USD",
+      rating: 4.8,
+      ratingsCount: 1_900_000,
+      version: "6.52",
+      updatedAt: new Date("2026-09-22"),
+      sizeBytes: 250_000_000,
+      contentRating: "4+",
+      url: "https://apps.apple.com/eg/app/calm/id571800810",
+      iconUrl: "https://img/icon-9",
       screenshots: [1, 2, 3].map((i) => ({ url: `https://img/shot-${i}`, device: "phone" as const })),
     }
     reviews = Array.from({ length: 30 }, (_, i) => ({
-      id: `r${i}`, author: `user${i}`, rating: (i % 5) + 1, title: `Title ${i}`, body: i === 0 ? "Paywall hit immediately" : `Body ${i}`,
-      version: "6.52", date: new Date(Date.UTC(2026, 8, 27, 12) - i * 3600_000),
+      id: `r${i}`,
+      author: `user${i}`,
+      rating: (i % 5) + 1,
+      title: `Title ${i}`,
+      body: i === 0 ? "Paywall hit immediately" : `Body ${i}`,
+      version: "6.52",
+      date: new Date(Date.UTC(2026, 8, 27, 12) - i * 3600_000),
     }))
     const res = await core.syncApp(appId, { client: () => fakeClient, fetchImage, reviewsPerApp: 25 })
     expect(res).toMatchObject({ name: "Calm", screenshots: 3, newScreenshots: 3, newReviews: 25, changes: [], warnings: [] })
@@ -128,7 +148,12 @@ suite("pipeline", () => {
   })
 
   it("detects changes on the next sync", async () => {
-    listing = { ...listing, price: "$4.99", version: "6.53", screenshots: [3, 4, 2].map((i) => ({ url: `https://img/shot-${i}`, device: "phone" as const })) }
+    listing = {
+      ...listing,
+      price: "$4.99",
+      version: "6.53",
+      screenshots: [3, 4, 2].map((i) => ({ url: `https://img/shot-${i}`, device: "phone" as const })),
+    }
     reviews = [{ id: "new1", author: "x", rating: 1, title: "Bad", body: "Crashes", version: "6.53", date: new Date() }, ...reviews]
     const res = await core.syncApp(appId, { client: () => fakeClient, fetchImage, reviewsPerApp: 25 })
     expect(res.newScreenshots).toBe(1)
@@ -152,7 +177,12 @@ suite("pipeline", () => {
   })
 
   it("marks the app as errored when the store fails", async () => {
-    const broken: StoreClient = { ...fakeClient, listing: async () => { throw new Error("HTTP 503 from itunes.apple.com") } }
+    const broken: StoreClient = {
+      ...fakeClient,
+      listing: async () => {
+        throw new Error("HTTP 503 from itunes.apple.com")
+      },
+    }
     await expect(core.syncApp(appId, { client: () => broken, fetchImage })).rejects.toThrow(/503/)
     expect((await core.getApp(appId))!.status).toBe("error")
     await core.syncApp(appId, { client: () => fakeClient, fetchImage, reviewsPerApp: 25 })

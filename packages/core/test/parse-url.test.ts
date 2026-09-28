@@ -4,13 +4,19 @@ import { parseStoreUrl } from "../src/stores/parse-url"
 describe("parseStoreUrl", () => {
   it("parses App Store links with country", () => {
     expect(parseStoreUrl("https://apps.apple.com/eg/app/calm-sleep-meditation/id571800810")).toEqual({
-      store: "ios", storeId: "571800810", country: "eg", lang: null,
+      store: "ios",
+      storeId: "571800810",
+      country: "eg",
+      lang: null,
     })
     expect(parseStoreUrl("apps.apple.com/us/app/x/id123456789?platform=iphone")?.storeId).toBe("123456789")
   })
   it("parses Google Play links with gl/hl", () => {
     expect(parseStoreUrl("https://play.google.com/store/apps/details?id=com.calm.android&hl=ar&gl=EG")).toEqual({
-      store: "android", storeId: "com.calm.android", country: "eg", lang: "ar",
+      store: "android",
+      storeId: "com.calm.android",
+      country: "eg",
+      lang: "ar",
     })
     expect(parseStoreUrl("https://play.google.com/store/apps/details?id=com.x.y&hl=en_US")?.lang).toBe("en")
   })

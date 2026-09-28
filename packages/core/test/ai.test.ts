@@ -10,10 +10,17 @@ describe("AI helpers", () => {
   })
   it("normalises classifier output to the fixed vocabularies", () => {
     expect(normaliseItem({ id: "1", sentiment: "negative", topic: "pricing", kind: "complaint", label: "Too expensive." })).toEqual({
-      id: "1", sentiment: "negative", topic: "Pricing", kind: "complaint", label: "Too expensive",
+      id: "1",
+      sentiment: "negative",
+      topic: "Pricing",
+      kind: "complaint",
+      label: "Too expensive",
     })
     expect(normaliseItem({ id: "2", sentiment: "angry" as never, topic: "weird", kind: "x" as never })).toMatchObject({
-      sentiment: "neutral", topic: "Other", kind: "other", label: "",
+      sentiment: "neutral",
+      topic: "Other",
+      kind: "other",
+      label: "",
     })
     expect(normaliseItem({})).toBeNull()
   })

@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest"
 import { diffSnapshots, type SnapshotData } from "../src/diff"
 
 const base: SnapshotData = {
-  name: "Calm", description: "Sleep better tonight", releaseNotes: "Fixes", price: "Free", version: "1.0", iconHash: "i1", screenshots: ["a", "b", "c"],
+  name: "Calm",
+  description: "Sleep better tonight",
+  releaseNotes: "Fixes",
+  price: "Free",
+  version: "1.0",
+  iconHash: "i1",
+  screenshots: ["a", "b", "c"],
 }
 
 describe("diffSnapshots", () => {
@@ -10,7 +16,15 @@ describe("diffSnapshots", () => {
     expect(diffSnapshots(base, { ...base, description: " Sleep  better tonight " })).toEqual([])
   })
   it("detects each tracked field", () => {
-    const next = { ...base, name: "Calm+", price: "$4.99", version: "1.1", description: "Sleep better every night", iconHash: "i2", screenshots: ["a", "d", "c"] }
+    const next = {
+      ...base,
+      name: "Calm+",
+      price: "$4.99",
+      version: "1.1",
+      description: "Sleep better every night",
+      iconHash: "i2",
+      screenshots: ["a", "d", "c"],
+    }
     const fields = diffSnapshots(base, next).map((c) => c.field)
     expect(fields).toEqual(["name", "price", "version", "description", "icon", "screenshots"])
     const shots = diffSnapshots(base, next).find((c) => c.field === "screenshots")!

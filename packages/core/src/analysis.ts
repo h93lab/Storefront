@@ -37,19 +37,31 @@ Respond with JSON only: {"items":[{"id":"...","sentiment":"...","topic":"...","k
 
 export function normaliseItem(raw: Partial<Classified>): Classified | null {
   if (!raw?.id) return null
-  const sentiment = (["positive", "neutral", "negative"] as const).includes(raw.sentiment as Sentiment) ? (raw.sentiment as Sentiment) : "neutral"
+  const sentiment = (["positive", "neutral", "negative"] as const).includes(raw.sentiment as Sentiment)
+    ? (raw.sentiment as Sentiment)
+    : "neutral"
   const kind = (["complaint", "request", "praise", "other"] as const).includes(raw.kind as Kind) ? (raw.kind as Kind) : "other"
   const topic = TOPICS.find((t) => t.toLowerCase() === String(raw.topic ?? "").toLowerCase()) ?? "Other"
-  const label = String(raw.label ?? "").trim().replace(/\.$/, "").slice(0, 80)
+  const label = String(raw.label ?? "")
+    .trim()
+    .replace(/\.$/, "")
+    .slice(0, 80)
   return { id: String(raw.id), sentiment, topic, kind, label }
 }
 
-async function classifyBatch(cfg: Settings["ai"], batch: { review_id: string; rating: number | null; title: string | null; body: string | null }[]) {
+async function classifyBatch(
+  cfg: Settings["ai"],
+  batch: { review_id: string; rating: number | null; title: string | null; body: string | null }[],
+) {
   const payload = batch.map((r) => ({ id: r.review_id, rating: r.rating, text: `${r.title ?? ""}\n${r.body ?? ""}`.trim().slice(0, 1200) }))
-  const reply = await chat(cfg, [
-    { role: "system", content: SYSTEM },
-    { role: "user", content: JSON.stringify(payload) },
-  ], { json: true, maxTokens: 6000 })
+  const reply = await chat(
+    cfg,
+    [
+      { role: "system", content: SYSTEM },
+      { role: "user", content: JSON.stringify(payload) },
+    ],
+    { json: true, maxTokens: 6000 },
+  )
   const parsed = parseJsonReply<{ items?: Partial<Classified>[] }>(reply)
   return (parsed.items ?? []).map(normaliseItem).filter((x): x is Classified => x !== null)
 }
@@ -115,10 +127,14 @@ export async function analyseApp(appId: string, opts: { batchSize?: number; log?
   }
   let clusters: { complaints: { label: string; count: number }[]; requests: { label: string; count: number }[]; summary: string }
   try {
-    const reply = await chat(settings.ai, [
-      { role: "system", content: CLUSTER_SYSTEM },
-      { role: "user", content: JSON.stringify(raw) },
-    ], { json: true, maxTokens: 1500 })
+    const reply = await chat(
+      settings.ai,
+      [
+        { role: "system", content: CLUSTER_SYSTEM },
+        { role: "user", content: JSON.stringify(raw) },
+      ],
+      { json: true, maxTokens: 1500 },
+    )
     const p = parseJsonReply<typeof clusters>(reply)
     const clean = (xs: unknown) =>
       (Array.isArray(xs) ? xs : [])

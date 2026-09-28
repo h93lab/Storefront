@@ -47,7 +47,7 @@ export async function storeImage(bytes: Buffer, folder: string, opts: { maxWidth
 /** Resolves a stored relative path safely inside MEDIA_DIR (rejects traversal). */
 export function resolveMediaPath(rel: string): string | null {
   const root = env.mediaDir
-  const abs = path.resolve(root, rel)
+  const abs = path.resolve(/*turbopackIgnore: true*/ root, rel)
   return abs.startsWith(root + path.sep) ? abs : null
 }
 

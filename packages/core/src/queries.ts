@@ -146,7 +146,11 @@ export async function getReviews(appId: string, f: ReviewQuery = {}) {
     and (${f.topic ?? null}::text is null or topic = ${f.topic ?? ""})
     and (${f.sentiment ?? null}::text is null or sentiment = ${f.sentiment ?? ""})`
   const order =
-    f.sort === "low" ? sql`rating asc nulls last, reviewed_at desc` : f.sort === "high" ? sql`rating desc nulls last, reviewed_at desc` : sql`reviewed_at desc nulls last`
+    f.sort === "low"
+      ? sql`rating asc nulls last, reviewed_at desc`
+      : f.sort === "high"
+        ? sql`rating desc nulls last, reviewed_at desc`
+        : sql`reviewed_at desc nulls last`
   const limit = Math.min(Math.max(f.limit ?? 50, 1), 500)
   const rows = await sql<Review[]>`
     select app_id, review_id, author, rating, title, body, app_version, reviewed_at, sentiment, topic, label, label_kind
@@ -225,18 +229,20 @@ export async function ratingHistory(appId: string, days = 90) {
 
 export async function dashboardStats() {
   const sql = db()
-  const [s] = await sql<{
-    apps: number
-    ios: number
-    android: number
-    reviews_24h: number
-    reviews_prev_7d_avg: number
-    changes_7d: number
-    positive: number
-    neutral: number
-    negative: number
-    errors: number
-  }[]>`
+  const [s] = await sql<
+    {
+      apps: number
+      ios: number
+      android: number
+      reviews_24h: number
+      reviews_prev_7d_avg: number
+      changes_7d: number
+      positive: number
+      neutral: number
+      negative: number
+      errors: number
+    }[]
+  >`
     select
       (select count(*)::int from apps) as apps,
       (select count(*)::int from apps where store = 'ios') as ios,

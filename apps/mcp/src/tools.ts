@@ -57,9 +57,19 @@ export function buildServer() {
       const apps = await listApps({ q: query, store, category })
       return json(
         apps.map((a) => ({
-          app_id: a.id, name: a.name, developer: a.developer, store: a.store, country: a.country.toUpperCase(),
-          category: a.category, rating: a.rating, ratings_count: a.ratings_count, price: a.price, status: a.status,
-          last_synced_at: a.last_synced_at, recent_change: a.recent_change, url: appLink(a.id),
+          app_id: a.id,
+          name: a.name,
+          developer: a.developer,
+          store: a.store,
+          country: a.country.toUpperCase(),
+          category: a.category,
+          rating: a.rating,
+          ratings_count: a.ratings_count,
+          price: a.price,
+          status: a.status,
+          last_synced_at: a.last_synced_at,
+          recent_change: a.recent_change,
+          url: appLink(a.id),
         })),
       )
     },
@@ -78,12 +88,34 @@ export function buildServer() {
       if (!a) return fail(`No app with id ${app_id}. Use search_library to find ids.`)
       const ins = await getInsights(app_id)
       return json({
-        app_id: a.id, name: a.name, developer: a.developer, store: a.store, store_id: a.store_id, country: a.country.toUpperCase(),
-        language: a.lang, category: a.category, rating: a.rating, ratings_count: a.ratings_count, price: a.price, version: a.version,
-        updated_on_store: a.updated_at_store, size_bytes: a.size_bytes, content_rating: a.content_rating, store_url: a.store_url,
-        description: a.description, release_notes: a.release_notes, reviews_stored: a.reviews_count, screenshots: a.screenshots_count,
-        icon_url: media(a.icon_path), status: a.status, last_error: a.last_error, last_synced_at: a.last_synced_at, url: appLink(a.id),
-        insights: ins ? { sentiment: ins.sentiment, top_complaints: ins.complaints, top_requests: ins.requests, summary: ins.summary } : null,
+        app_id: a.id,
+        name: a.name,
+        developer: a.developer,
+        store: a.store,
+        store_id: a.store_id,
+        country: a.country.toUpperCase(),
+        language: a.lang,
+        category: a.category,
+        rating: a.rating,
+        ratings_count: a.ratings_count,
+        price: a.price,
+        version: a.version,
+        updated_on_store: a.updated_at_store,
+        size_bytes: a.size_bytes,
+        content_rating: a.content_rating,
+        store_url: a.store_url,
+        description: a.description,
+        release_notes: a.release_notes,
+        reviews_stored: a.reviews_count,
+        screenshots: a.screenshots_count,
+        icon_url: media(a.icon_path),
+        status: a.status,
+        last_error: a.last_error,
+        last_synced_at: a.last_synced_at,
+        url: appLink(a.id),
+        insights: ins
+          ? { sentiment: ins.sentiment, top_complaints: ins.complaints, top_requests: ins.requests, summary: ins.summary }
+          : null,
       })
     },
   )
@@ -100,8 +132,15 @@ export function buildServer() {
       const shots = await getScreenshots(app_id, { includeInactive: include_previous })
       return json(
         shots.map((s) => ({
-          screenshot_id: s.id, position: s.position + 1, device: s.device, current: s.active, width: s.width, height: s.height,
-          first_seen_at: s.first_seen_at, last_seen_at: s.last_seen_at, url: media(s.path),
+          screenshot_id: s.id,
+          position: s.position + 1,
+          device: s.device,
+          current: s.active,
+          width: s.width,
+          height: s.height,
+          first_seen_at: s.first_seen_at,
+          last_seen_at: s.last_seen_at,
+          url: media(s.path),
         })),
       )
     },
@@ -152,8 +191,15 @@ export function buildServer() {
         returned: rows.length,
         topics: await topicCounts(app_id),
         reviews: rows.map((r) => ({
-          review_id: r.review_id, rating: r.rating, title: r.title, body: r.body, date: r.reviewed_at, version: r.app_version,
-          sentiment: r.sentiment, topic: r.topic, label: r.label,
+          review_id: r.review_id,
+          rating: r.rating,
+          title: r.title,
+          body: r.body,
+          date: r.reviewed_at,
+          version: r.app_version,
+          sentiment: r.sentiment,
+          topic: r.topic,
+          label: r.label,
         })),
       })
     },
@@ -179,14 +225,22 @@ export function buildServer() {
     {
       title: "Get changes",
       description: "Detected listing changes (screenshots, description, price, version, name, icon), newest first.",
-      inputSchema: { app_id: uuid.optional(), days: z.number().int().min(1).max(3650).optional(), limit: z.number().int().min(1).max(200).optional() },
+      inputSchema: {
+        app_id: uuid.optional(),
+        days: z.number().int().min(1).max(3650).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      },
       annotations: { readOnlyHint: true },
     },
     async ({ app_id, days, limit }) => {
       const rows = await getChanges({ appId: app_id, days, limit: limit ?? 50 })
       return json(
         rows.map((c) => ({
-          app_id: c.app_id, app: c.app_name, field: c.field, summary: c.summary, detected_at: c.detected_at,
+          app_id: c.app_id,
+          app: c.app_name,
+          field: c.field,
+          summary: c.summary,
+          detected_at: c.detected_at,
           ...(c.field === "screenshots" ? {} : { old_value: c.old_value, new_value: c.new_value }),
         })),
       )
@@ -205,9 +259,18 @@ export function buildServer() {
       const rows = await compareApps(app_ids)
       return json(
         rows.map((a) => ({
-          app_id: a.id, name: a.name, store: a.store, country: a.country.toUpperCase(), rating: a.rating, ratings_count: a.ratings_count,
-          price: a.price, version: a.version, size_bytes: a.size_bytes, reviews_stored: a.reviews_count,
-          sentiment: a.insights?.sentiment ?? null, top_complaint: a.insights?.complaints?.[0]?.label ?? null,
+          app_id: a.id,
+          name: a.name,
+          store: a.store,
+          country: a.country.toUpperCase(),
+          rating: a.rating,
+          ratings_count: a.ratings_count,
+          price: a.price,
+          version: a.version,
+          size_bytes: a.size_bytes,
+          reviews_stored: a.reviews_count,
+          sentiment: a.insights?.sentiment ?? null,
+          top_complaint: a.insights?.complaints?.[0]?.label ?? null,
           top_request: a.insights?.requests?.[0]?.label ?? null,
         })),
       )
@@ -251,7 +314,12 @@ export function buildServer() {
     async ({ link_or_id, country, lang }) => {
       const parsed = parseStoreUrl(link_or_id)
       if (!parsed) return fail("That is not an App Store or Google Play link, iOS id or Android package name.")
-      const row = await addApp({ store: parsed.store, storeId: parsed.storeId, country: country ?? parsed.country ?? "us", lang: lang ?? parsed.lang ?? "en" })
+      const row = await addApp({
+        store: parsed.store,
+        storeId: parsed.storeId,
+        country: country ?? parsed.country ?? "us",
+        lang: lang ?? parsed.lang ?? "en",
+      })
       return json({ app_id: row.id, created: row.created, status: "sync queued", url: appLink(row.id) })
     },
   )
@@ -279,7 +347,15 @@ export function buildServer() {
       annotations: { readOnlyHint: true },
     },
     async () =>
-      json((await listBoards()).map((b) => ({ board_id: b.id, name: b.name, description: b.description, screenshots: b.screens, reviews: b.reviews }))),
+      json(
+        (await listBoards()).map((b) => ({
+          board_id: b.id,
+          name: b.name,
+          description: b.description,
+          screenshots: b.screens,
+          reviews: b.reviews,
+        })),
+      ),
   )
 
   server.registerTool(
@@ -299,8 +375,26 @@ export function buildServer() {
         description: b.description,
         items: b.items.map((i) =>
           i.kind === "screenshot"
-            ? { item_id: i.id, kind: i.kind, app: i.app_name, app_id: i.app_id, screenshot_id: i.screenshot_id, url: media(i.screenshot_path), note: i.note }
-            : { item_id: i.id, kind: i.kind, app: i.app_name, app_id: i.app_id, review_id: i.review_id, rating: i.review_rating, title: i.review_title, body: i.review_body, note: i.note },
+            ? {
+                item_id: i.id,
+                kind: i.kind,
+                app: i.app_name,
+                app_id: i.app_id,
+                screenshot_id: i.screenshot_id,
+                url: media(i.screenshot_path),
+                note: i.note,
+              }
+            : {
+                item_id: i.id,
+                kind: i.kind,
+                app: i.app_name,
+                app_id: i.app_id,
+                review_id: i.review_id,
+                rating: i.review_rating,
+                title: i.review_title,
+                body: i.review_body,
+                note: i.note,
+              },
         ),
       })
     },

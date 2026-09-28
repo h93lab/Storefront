@@ -40,7 +40,9 @@ export async function listBoards() {
 export async function getBoard(id: string) {
   if (!/^[0-9a-f-]{36}$/i.test(id)) return null
   const sql = db()
-  const [board] = await sql<Omit<Board, "screens" | "reviews" | "preview">[]>`select id, name, description, created_at from boards where id = ${id}`
+  const [board] = await sql<
+    Omit<Board, "screens" | "reviews" | "preview">[]
+  >`select id, name, description, created_at from boards where id = ${id}`
   if (!board) return null
   const items = await sql<BoardItem[]>`
     select i.id::text, i.kind, i.note, i.created_at, i.app_id, a.name as app_name, a.store as app_store,
@@ -57,7 +59,9 @@ export async function getBoard(id: string) {
 export async function createBoard(name: string, description?: string | null) {
   const clean = name.trim()
   if (!clean) throw new Error("Board name is required")
-  const [row] = await db()<{ id: string }[]>`insert into boards (name, description) values (${clean.slice(0, 120)}, ${description?.trim() || null}) returning id`
+  const [row] = await db()<
+    { id: string }[]
+  >`insert into boards (name, description) values (${clean.slice(0, 120)}, ${description?.trim() || null}) returning id`
   return row.id
 }
 

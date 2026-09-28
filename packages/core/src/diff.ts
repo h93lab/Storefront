@@ -37,7 +37,12 @@ export function diffSnapshots(prev: SnapshotData, next: SnapshotData): DetectedC
     out.push({ field: "price", oldValue: prev.price, newValue: next.price, summary: `Price ${prev.price ?? "—"} → ${next.price ?? "—"}` })
   }
   if (norm(prev.version) !== norm(next.version) && next.version) {
-    out.push({ field: "version", oldValue: prev.version, newValue: next.version, summary: `Version ${prev.version ?? "—"} → ${next.version}` })
+    out.push({
+      field: "version",
+      oldValue: prev.version,
+      newValue: next.version,
+      summary: `Version ${prev.version ?? "—"} → ${next.version}`,
+    })
   }
   if (norm(prev.description) !== norm(next.description)) {
     const { added, removed } = wordDelta(prev.description ?? "", next.description ?? "")

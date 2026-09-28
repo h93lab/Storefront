@@ -27,18 +27,63 @@ interface Demo {
 }
 
 const DEMOS: Demo[] = [
-  { storeId: "demo.stillwater", store: "ios", country: "us", name: "Stillwater: Sleep & Calm", developer: "Demo Studio", category: "Health & Fitness", hue: 215, price: "Free", rating: 4.8, ratings: 182000,
-    description: "Stillwater helps you wind down.\n\n• Guided sessions from 3 to 25 minutes\n• Sleep stories and soundscapes\n• Gentle daily reminders\n\nStart a 7-day free trial, then choose monthly or yearly access.",
-    screens: ["Sleep better tonight", "Pick your goal", "Stories that relax", "Track your streak", "Start free trial"] },
-  { storeId: "demo.lingosprint", store: "android", country: "eg", name: "Lingo Sprint", developer: "Demo Studio", category: "Education", hue: 130, price: "Free", rating: 4.6, ratings: 96000,
+  {
+    storeId: "demo.stillwater",
+    store: "ios",
+    country: "us",
+    name: "Stillwater: Sleep & Calm",
+    developer: "Demo Studio",
+    category: "Health & Fitness",
+    hue: 215,
+    price: "Free",
+    rating: 4.8,
+    ratings: 182000,
+    description:
+      "Stillwater helps you wind down.\n\n• Guided sessions from 3 to 25 minutes\n• Sleep stories and soundscapes\n• Gentle daily reminders\n\nStart a 7-day free trial, then choose monthly or yearly access.",
+    screens: ["Sleep better tonight", "Pick your goal", "Stories that relax", "Track your streak", "Start free trial"],
+  },
+  {
+    storeId: "demo.lingosprint",
+    store: "android",
+    country: "eg",
+    name: "Lingo Sprint",
+    developer: "Demo Studio",
+    category: "Education",
+    hue: 130,
+    price: "Free",
+    rating: 4.6,
+    ratings: 96000,
     description: "Learn a language in five minutes a day with bite-sized lessons, streaks and friendly reminders.",
-    screens: ["5 minutes a day", "Choose a language", "Daily streaks", "Practice speaking"] },
-  { storeId: "demo.taskline", store: "ios", country: "sa", name: "Taskline Planner", developer: "Demo Studio", category: "Productivity", hue: 25, price: "$4.99", rating: 4.7, ratings: 24000,
+    screens: ["5 minutes a day", "Choose a language", "Daily streaks", "Practice speaking"],
+  },
+  {
+    storeId: "demo.taskline",
+    store: "ios",
+    country: "sa",
+    name: "Taskline Planner",
+    developer: "Demo Studio",
+    category: "Productivity",
+    hue: 25,
+    price: "$4.99",
+    rating: 4.7,
+    ratings: 24000,
     description: "Plan your day, share lists and never miss a deadline.",
-    screens: ["Plan your day", "Shared lists", "Smart reminders", "Widgets"] },
-  { storeId: "demo.stride", store: "android", country: "ae", name: "Stride Run Club", developer: "Demo Studio", category: "Health & Fitness", hue: 5, price: "Free", rating: 4.5, ratings: 51000,
+    screens: ["Plan your day", "Shared lists", "Smart reminders", "Widgets"],
+  },
+  {
+    storeId: "demo.stride",
+    store: "android",
+    country: "ae",
+    name: "Stride Run Club",
+    developer: "Demo Studio",
+    category: "Health & Fitness",
+    hue: 5,
+    price: "Free",
+    rating: 4.5,
+    ratings: 51000,
     description: "Track runs, join clubs and train for your next race.",
-    screens: ["Run with friends", "Live tracking", "Training plans", "Join a club"] },
+    screens: ["Run with friends", "Live tracking", "Training plans", "Join a club"],
+  },
 ]
 
 const REVIEW_TEXT: [number, string, string][] = [
@@ -78,12 +123,25 @@ function iconSvg(d: Demo) {
 }
 
 function listingFor(d: Demo, variant: number): StoreListing {
-  const screens = variant === 0 ? d.screens : [d.screens[d.screens.length - 1], ...d.screens.slice(0, -1)].map((s, i) => (i === 0 ? `${s}!` : s))
+  const screens =
+    variant === 0 ? d.screens : [d.screens[d.screens.length - 1], ...d.screens.slice(0, -1)].map((s, i) => (i === 0 ? `${s}!` : s))
   return {
-    storeId: d.storeId, name: d.name, developer: d.developer, category: d.category, description: d.description,
-    releaseNotes: "Bug fixes and performance improvements.", price: variant === 1 && d.price !== "Free" ? "$5.99" : d.price,
-    priceValue: null, currency: "USD", rating: d.rating, ratingsCount: d.ratings, version: variant === 0 ? "3.4.0" : "3.5.0",
-    updatedAt: new Date(), sizeBytes: 120_000_000, contentRating: "4+", url: null,
+    storeId: d.storeId,
+    name: d.name,
+    developer: d.developer,
+    category: d.category,
+    description: d.description,
+    releaseNotes: "Bug fixes and performance improvements.",
+    price: variant === 1 && d.price !== "Free" ? "$5.99" : d.price,
+    priceValue: null,
+    currency: "USD",
+    rating: d.rating,
+    ratingsCount: d.ratings,
+    version: variant === 0 ? "3.4.0" : "3.5.0",
+    updatedAt: new Date(),
+    sizeBytes: 120_000_000,
+    contentRating: "4+",
+    url: null,
     iconUrl: `demo://icon/${d.storeId}`,
     screenshots: screens.map((s, i) => ({ url: `demo://screen/${d.storeId}/${encodeURIComponent(s)}/${i}`, device: "phone" as const })),
   }
@@ -92,7 +150,15 @@ function listingFor(d: Demo, variant: number): StoreListing {
 function reviewsFor(d: Demo): StoreReview[] {
   return Array.from({ length: 60 }, (_, i) => {
     const [rating, title, body] = REVIEW_TEXT[(i * 7 + d.hue) % REVIEW_TEXT.length]
-    return { id: `${d.storeId}-${i}`, author: `Demo user ${i + 1}`, rating, title, body, version: "3.4.0", date: new Date(Date.now() - i * 11 * 3600_000) }
+    return {
+      id: `${d.storeId}-${i}`,
+      author: `Demo user ${i + 1}`,
+      rating,
+      title,
+      body,
+      version: "3.4.0",
+      date: new Date(Date.now() - i * 11 * 3600_000),
+    }
   })
 }
 
@@ -115,7 +181,11 @@ for (const d of DEMOS) {
     on conflict (store, store_id, country) do update set lang = 'en' returning id`
   const reviews = reviewsFor(d)
   for (const variant of [0, 1]) {
-    const client: StoreClient = { listing: async () => listingFor(d, variant), reviews: async (_r, max) => reviews.slice(0, max), search: async () => [] }
+    const client: StoreClient = {
+      listing: async () => listingFor(d, variant),
+      reviews: async (_r, max) => reviews.slice(0, max),
+      search: async () => [],
+    }
     await syncApp(row.id, { client: () => client, fetchImage: renderDemo, reviewsPerApp: 60 })
   }
   // Rating history for the chart: 90 days of gentle drift.
@@ -129,8 +199,17 @@ for (const d of DEMOS) {
   const n = reviews.length
   await sql`insert into insights (app_id, model, reviews_count, sentiment, complaints, requests, summary)
     values (${row.id}, 'demo', ${n}, ${sql.json({ positive: 30, neutral: 12, negative: 18 })},
-      ${sql.json([{ label: "Paywall before trying content", count: 14 }, { label: "Offline playback broken", count: 9 }, { label: "Too many notifications", count: 7 }, { label: "Hard to cancel subscription", count: 5 }])},
-      ${sql.json([{ label: "Arabic language support", count: 11 }, { label: "Family plan", count: 8 }, { label: "Custom session length", count: 4 }])},
+      ${sql.json([
+        { label: "Paywall before trying content", count: 14 },
+        { label: "Offline playback broken", count: 9 },
+        { label: "Too many notifications", count: 7 },
+        { label: "Hard to cancel subscription", count: 5 },
+      ])},
+      ${sql.json([
+        { label: "Arabic language support", count: 11 },
+        { label: "Family plan", count: 8 },
+        { label: "Custom session length", count: 4 },
+      ])},
       'Demo summary: users want to try content before paying, and ask for Arabic support that competitors lack.')
     on conflict (app_id) do nothing`
   await sql`update reviews r set sentiment = case when rating >= 4 then 'positive' when rating = 3 then 'neutral' else 'negative' end,
@@ -142,9 +221,14 @@ for (const d of DEMOS) {
 
 const [{ count }] = await sql<{ count: number }[]>`select count(*)::int from boards`
 if (!count) {
-  const [b] = await sql<{ id: string }[]>`insert into boards (name, description) values ('Meditation app · Onboarding', 'Demo board: first-run references') returning id`
-  const shots = await sql<{ id: string; app_id: string }[]>`select s.id::text, s.app_id from screenshots s join apps a on a.id = s.app_id where a.store_id like 'demo.%' and s.active order by s.position limit 4`
-  for (const s of shots) await sql`insert into board_items (board_id, kind, app_id, screenshot_id, note) values (${b.id}, 'screenshot', ${s.app_id}, ${s.id}, null)`
+  const [b] = await sql<
+    { id: string }[]
+  >`insert into boards (name, description) values ('Meditation app · Onboarding', 'Demo board: first-run references') returning id`
+  const shots = await sql<
+    { id: string; app_id: string }[]
+  >`select s.id::text, s.app_id from screenshots s join apps a on a.id = s.app_id where a.store_id like 'demo.%' and s.active order by s.position limit 4`
+  for (const s of shots)
+    await sql`insert into board_items (board_id, kind, app_id, screenshot_id, note) values (${b.id}, 'screenshot', ${s.app_id}, ${s.id}, null)`
   console.log("seeded demo board")
 }
 await closeDb()

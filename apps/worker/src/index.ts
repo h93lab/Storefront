@@ -11,15 +11,14 @@ import {
   finishJob,
   getInsights,
   getSettings,
-  migrate,
   requeueStale,
   syncApp,
   type Job,
 } from "@lens/core"
+import { migrate } from "@lens/core/migrate"
 
 const POLL_MS = Number(process.env.WORKER_POLL_MS ?? 3000)
-const log = (msg: string, extra?: Record<string, unknown>) =>
-  console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }))
+const log = (msg: string, extra?: Record<string, unknown>) => console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }))
 
 let stopping = false
 let schedule: Cron | null = null

@@ -28,7 +28,15 @@ export const androidClient: StoreClient = {
     } catch (e) {
       wrap(e, ref)
     }
-    const d = a as typeof a & { size?: string; screenshots?: string[]; genre?: string; contentRating?: string; updated?: number; version?: string; recentChanges?: string }
+    const d = a as typeof a & {
+      size?: string
+      screenshots?: string[]
+      genre?: string
+      contentRating?: string
+      updated?: number
+      version?: string
+      recentChanges?: string
+    }
     return {
       storeId: d.appId,
       name: d.title,

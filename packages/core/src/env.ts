@@ -7,7 +7,7 @@ export const env = {
     return url
   },
   get mediaDir() {
-    return path.resolve(process.env.MEDIA_DIR ?? "./data/media")
+    return path.resolve(/*turbopackIgnore: true*/ process.env.MEDIA_DIR ?? "./data/media")
   },
   /** Public base URL of the web app, used to build absolute media links for MCP clients. */
   get publicUrl() {

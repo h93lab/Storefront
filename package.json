@@ -2,7 +2,9 @@
   "name": "storefront-lens",
   "private": true,
   "packageManager": "pnpm@10.33.0",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev:web": "pnpm --filter @lens/web dev",
     "dev:worker": "pnpm --filter @lens/worker dev",
@@ -11,6 +13,11 @@
     "seed": "pnpm --filter @lens/core seed",
     "test": "pnpm --filter @lens/core test",
     "typecheck": "pnpm -r typecheck",
-    "build": "pnpm --filter @lens/web build"
+    "build": "pnpm --filter @lens/web build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.9.9"
   }
 }

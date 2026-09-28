@@ -1,7 +1,7 @@
 import crypto from "node:crypto"
 import http from "node:http"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
-import { migrate } from "@lens/core"
+import { migrate } from "@lens/core/migrate"
 import { buildServer } from "./tools"
 
 const PORT = Number(process.env.MCP_PORT ?? 3001)
@@ -72,9 +72,9 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     console.error(e)
     if (!res.headersSent) {
-      res.writeHead(400, { "content-type": "application/json" }).end(
-        JSON.stringify({ jsonrpc: "2.0", error: { code: -32700, message: (e as Error).message }, id: null }),
-      )
+      res
+        .writeHead(400, { "content-type": "application/json" })
+        .end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32700, message: (e as Error).message }, id: null }))
     }
   }
 })

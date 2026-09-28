@@ -27,7 +27,9 @@ interface ItunesApp {
   ipadScreenshotUrls?: string[]
 }
 
-interface RssLabel { label: string }
+interface RssLabel {
+  label: string
+}
 interface RssEntry {
   id?: RssLabel
   author?: { name?: RssLabel }

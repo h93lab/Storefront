@@ -3,7 +3,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 
 const [url, token] = process.argv.slice(2)
-const assert = (c, m) => { if (!c) { console.error("FAIL:", m); process.exit(1) } else console.log("ok -", m) }
+const assert = (c, m) => {
+  if (!c) {
+    console.error("FAIL:", m)
+    process.exit(1)
+  } else console.log("ok -", m)
+}
 
 const bad = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })
 assert(bad.status === 401, "rejects requests without a token")
@@ -15,7 +20,9 @@ assert(tools.length === 15, `lists ${tools.length} tools`)
 const call = async (name, args = {}) => {
   const r = await client.callTool({ name, arguments: args })
   let data = null
-  try { data = r.isError ? null : JSON.parse(r.content[0].text) } catch {}
+  try {
+    data = r.isError ? null : JSON.parse(r.content[0].text)
+  } catch {}
   return { r, data }
 }
 const { data: apps } = await call("search_library")
@@ -50,7 +57,10 @@ const { data: added } = await call("add_app", { link_or_id: "https://apps.apple.
 assert(added.status === "sync queued", "add_app queues a sync")
 await client.close()
 
-const viaPath = await fetch(`${url}/${token}`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
-  body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) })
+const viaPath = await fetch(`${url}/${token}`, {
+  method: "POST",
+  headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+  body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+})
 assert(viaPath.status === 200, "secret-path auth works")
 console.log("MCP smoke test passed")
