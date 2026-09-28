@@ -49,9 +49,15 @@ export interface StoreSearchResult {
   url: string | null
 }
 
+/** Optional hooks a store client uses to report what it did (shown in the sync report). */
+export interface FetchContext {
+  note?: (message: string) => void
+  progress?: (done: number, total: number) => void
+}
+
 export interface StoreClient {
   listing(ref: AppRef): Promise<StoreListing>
-  reviews(ref: AppRef, max: number): Promise<StoreReview[]>
+  reviews(ref: AppRef, max: number, ctx?: FetchContext): Promise<StoreReview[]>
   search(term: string, country: string, lang: string, limit: number): Promise<StoreSearchResult[]>
 }
 

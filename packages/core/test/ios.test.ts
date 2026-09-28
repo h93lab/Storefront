@@ -113,3 +113,76 @@ describe("iosClient over HTTP", () => {
     await expect(iosClient.listing({ store: "ios", storeId: "1", country: "us", lang: "en" })).rejects.toThrow(/not found/)
   })
 })
+
+describe("App Store reviews fallback", () => {
+  const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url")
+  const token = `${b64({ alg: "ES256", kid: "WebPlay" })}.${b64({ iss: "x", exp: Math.floor(Date.now() / 1000) + 3600 })}.c2lnbmF0dXJlLXNpZ25hdHVyZQ`
+  const expired = `${b64({ alg: "ES256" })}.${b64({ exp: 1000 })}.c2lnbmF0dXJlLXNpZ25hdHVyZQ`
+  const amp = (n: number, offset: number, more: boolean) => ({
+    data: Array.from({ length: n }, (_, i) => ({
+      id: `w${offset + i}`,
+      type: "user-reviews",
+      attributes: { date: "2026-09-20T10:00:00Z", title: "T", review: "Body", rating: 5, userName: "u" },
+    })),
+    next: more ? `/v1/catalog/tr/apps/1/reviews?offset=${offset + n}` : undefined,
+  })
+  const ref = { store: "ios" as const, storeId: "1", country: "tr", lang: "tr" }
+
+  it("finds only unexpired tokens", async () => {
+    const { findToken } = await import("../src/stores/ios")
+    expect(findToken(`<meta content="%7B%22token%22%3A%22${expired}%22%7D"> ${token}`)).toBe(token)
+    expect(findToken("nothing here")).toBeNull()
+  })
+
+  it("uses the web API when the RSS feed is empty, with token from a script bundle", async () => {
+    const { iosClient, _resetTokenCache } = await import("../src/stores/ios")
+    _resetTokenCache()
+    const seen: string[] = []
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        seen.push(url)
+        if (url.includes("/rss/")) return new Response(JSON.stringify({ feed: { author: {} } }))
+        if (url.includes("apps.apple.com/tr/app/id1"))
+          return new Response(`<html><script type="module" src="/assets/index-abc.js"></script></html>`)
+        if (url.endsWith("/assets/index-abc.js")) return new Response(`const cfg={token:"${token}"}`)
+        if (url.includes("/reviews?")) {
+          expect((init?.headers as Record<string, string>).authorization).toBe(`Bearer ${token}`)
+          const offset = Number(new URL(url).searchParams.get("offset"))
+          return new Response(JSON.stringify(amp(20, offset, offset < 40)))
+        }
+        return new Response("", { status: 404 })
+      }),
+    )
+    const notes: string[] = []
+    const r = await iosClient.reviews(ref, 500, { note: (n) => notes.push(n) })
+    expect(r).toHaveLength(60)
+    expect(r[0]).toMatchObject({ id: "w0", rating: 5, title: "T", body: "Body", author: "u" })
+    expect(notes.join(" ")).toMatch(/RSS feed returned no reviews.*web API: 60 reviews/)
+    expect(seen.find((u) => u.includes("/reviews?"))).toContain("l=tr")
+  })
+
+  it("prefers the RSS feed when it has reviews", async () => {
+    const { iosClient, _resetTokenCache } = await import("../src/stores/ios")
+    _resetTokenCache()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url.includes("page=1/") ? new Response(JSON.stringify(rss(5))) : new Response(JSON.stringify({ feed: {} })),
+      ),
+    )
+    const notes: string[] = []
+    expect(await iosClient.reviews(ref, 500, { note: (n) => notes.push(n) })).toHaveLength(5)
+    expect(notes).toEqual(["App Store RSS feed: 5 reviews"])
+  })
+
+  it("reports both errors when every source fails", async () => {
+    const { iosClient, _resetTokenCache } = await import("../src/stores/ios")
+    _resetTokenCache()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("", { status: 403 })),
+    )
+    await expect(iosClient.reviews(ref, 50)).rejects.toThrow(/RSS feed: HTTP 403.*web API: HTTP 403/)
+  })
+})

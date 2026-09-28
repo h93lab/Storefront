@@ -1,5 +1,6 @@
 import gplay from "google-play-scraper"
-import { StoreError, type AppRef, type StoreClient, type StoreListing, type StoreReview } from "./types"
+import { withTimeout } from "./http"
+import { StoreError, type AppRef, type FetchContext, type StoreClient, type StoreListing, type StoreReview } from "./types"
 
 /**
  * Google Play has no public API; google-play-scraper parses the store pages.
@@ -24,7 +25,7 @@ export const androidClient: StoreClient = {
   async listing(ref: AppRef): Promise<StoreListing> {
     let a
     try {
-      a = await gplay.app({ appId: ref.storeId, country: ref.country, lang: ref.lang })
+      a = await withTimeout(gplay.app({ appId: ref.storeId, country: ref.country, lang: ref.lang }), 45_000, "Google Play listing")
     } catch (e) {
       wrap(e, ref)
     }
@@ -59,20 +60,24 @@ export const androidClient: StoreClient = {
     }
   },
 
-  async reviews(ref: AppRef, max: number): Promise<StoreReview[]> {
+  async reviews(ref: AppRef, max: number, ctx?: FetchContext): Promise<StoreReview[]> {
     const out: StoreReview[] = []
     let token: string | undefined
     try {
       while (out.length < max) {
-        const res = await gplay.reviews({
-          appId: ref.storeId,
-          country: ref.country,
-          lang: ref.lang,
-          sort: 2 /* NEWEST */,
-          num: Math.min(150, max - out.length),
-          paginate: true,
-          nextPaginationToken: token,
-        })
+        const res = await withTimeout(
+          gplay.reviews({
+            appId: ref.storeId,
+            country: ref.country,
+            lang: ref.lang,
+            sort: 2 /* NEWEST */,
+            num: Math.min(150, max - out.length),
+            paginate: true,
+            nextPaginationToken: token,
+          }),
+          45_000,
+          "Google Play reviews",
+        )
         out.push(
           ...res.data.map((r) => ({
             id: r.id,
@@ -84,17 +89,20 @@ export const androidClient: StoreClient = {
             date: r.date ? new Date(r.date) : null,
           })),
         )
+        ctx?.progress?.(Math.min(out.length, max), max)
         token = res.nextPaginationToken
         if (!token || !res.data.length) break
       }
     } catch (e) {
       if (!out.length) wrap(e, ref)
+      ctx?.note?.(`Google Play stopped after ${out.length} reviews: ${(e as Error).message}`)
     }
+    ctx?.note?.(`Google Play (${ref.lang}): ${Math.min(out.length, max)} reviews`)
     return out.slice(0, max)
   },
 
   async search(term, country, lang, limit) {
-    const res = await gplay.search({ term, country, lang, num: limit })
+    const res = await withTimeout(gplay.search({ term, country, lang, num: limit }), 30_000, "Google Play search")
     return res.map((a) => ({
       store: "android" as const,
       storeId: a.appId,

@@ -27,8 +27,19 @@ export async function fetchWithRetry(url: string, init: RequestInit = {}, tries 
   throw lastErr instanceof Error ? lastErr : new StoreError(String(lastErr))
 }
 
-export async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetchWithRetry(url)
+/** Rejects if `promise` does not settle within `ms` (for libraries without their own timeout). */
+export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new StoreError(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms)
+    }),
+  ]).finally(() => clearTimeout(timer))
+}
+
+export async function fetchJson<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetchWithRetry(url, init)
   if (!res.ok) throw new StoreError(`HTTP ${res.status} from ${new URL(url).hostname}`, res.status)
   return (await res.json()) as T
 }

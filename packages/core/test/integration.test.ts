@@ -28,6 +28,7 @@ const fakeClient: StoreClient = {
   search: async () => [],
 }
 const fetchImage = (u: string) => {
+  if (u.endsWith("copy-of-3")) return fetchImage("https://img/shot-3")
   if (!images.has(u)) images.set(u, png(Number(u.match(/(\d+)$/)?.[1] ?? 1) * 20))
   return images.get(u)!
 }
@@ -121,7 +122,10 @@ suite("pipeline", () => {
       contentRating: "4+",
       url: "https://apps.apple.com/eg/app/calm/id571800810",
       iconUrl: "https://img/icon-9",
-      screenshots: [1, 2, 3].map((i) => ({ url: `https://img/shot-${i}`, device: "phone" as const })),
+      screenshots: [
+        ...[1, 2, 3].map((i) => ({ url: `https://img/shot-${i}`, device: "phone" as const })),
+        { url: "https://img/copy-of-3", device: "tablet" as const }, // same bytes as shot-3
+      ],
     }
     reviews = Array.from({ length: 30 }, (_, i) => ({
       id: `r${i}`,
@@ -133,7 +137,15 @@ suite("pipeline", () => {
       date: new Date(Date.UTC(2026, 8, 27, 12) - i * 3600_000),
     }))
     const res = await core.syncApp(appId, { client: () => fakeClient, fetchImage, reviewsPerApp: 25 })
-    expect(res).toMatchObject({ name: "Calm", screenshots: 3, newScreenshots: 3, newReviews: 25, changes: [], warnings: [] })
+    expect(res).toMatchObject({
+      name: "Calm",
+      screenshots: 3,
+      newScreenshots: 3,
+      reviewsFetched: 25,
+      newReviews: 25,
+      changes: [],
+      warnings: [],
+    })
 
     const app = await core.getApp(appId)
     expect(app).toMatchObject({ name: "Calm", status: "ready", rating: 4.8, reviews_count: 25, screenshots_count: 3, country: "eg" })
@@ -181,7 +193,7 @@ suite("pipeline", () => {
     listing = { ...listing, screenshots: [5, 6, 2].map((i) => ({ url: `https://img/shot-${i}`, device: "phone" as const })) }
     const flaky = (u: string) => (u.endsWith("shot-6") ? Promise.reject(new Error("HTTP 429")) : fetchImage(u))
     const res = await core.syncApp(appId, { client: () => fakeClient, fetchImage: flaky, reviewsPerApp: 25 })
-    expect(res.warnings.join()).toMatch(/Screenshot 2 download failed/)
+    expect(res.warnings.join()).toMatch(/Screenshot download failed: HTTP 429/)
     expect(res.changes).toEqual([])
     expect((await core.getScreenshots(appId)).length).toBe(3) // previous set kept active
     listing = saved
@@ -200,6 +212,37 @@ suite("pipeline", () => {
     expect(await core.requeueStale(30)).toBe(0) // not stale yet
     expect(await core.requeueStale(0)).toBe(1) // startup recovery
     expect((await core.getApp(appId))!.status).toBe("ready")
+    await core.db()`delete from jobs`
+  })
+
+  it("saves a sync report and reports progress", async () => {
+    const steps: string[] = []
+    await core.syncApp(appId, { client: () => fakeClient, fetchImage, reviewsPerApp: 25, onProgress: (m) => steps.push(m) })
+    expect(steps[0]).toBe("Fetching the store listing")
+    expect(steps).toContain("Comparing with the last snapshot")
+    const [{ sync_report }] = await core.db()<
+      { sync_report: { ok: boolean; reviewsFetched: number } }[]
+    >`select sync_report from apps where id = ${appId}`
+    expect(sync_report).toMatchObject({ ok: true, reviewsFetched: 25 })
+  })
+
+  it("retries transient failures later and never runs two jobs for one app at once", async () => {
+    await core.db()`delete from jobs`
+    const a = await core.enqueue("sync_app", { appId })
+    const b = await core.enqueue("analyse_app", { appId })
+    const first = await core.claimJob()
+    expect(first?.id).toBe(a)
+    expect(await core.claimJob()).toBeNull() // same app is busy
+    await core.setJobProgress(a, "Downloading screenshots 1/3")
+    expect((await core.activeJobs(appId)).find((j) => j.id === a)?.progress).toBe("Downloading screenshots 1/3")
+    expect(core.isTransient("HTTP 503 from itunes.apple.com")).toBe(true)
+    expect(core.isTransient("App 1 not found in the US App Store")).toBe(false)
+    await core.retryJob(a, "HTTP 503", 60_000)
+    expect((await core.claimJob())?.id).toBe(b) // the retry waits, other work proceeds
+    await core.finishJob(b, "ok")
+    expect(await core.claimJob()).toBeNull()
+    await core.db()`update jobs set run_after = now() where id = ${a}`
+    expect((await core.claimJob())?.id).toBe(a)
     await core.db()`delete from jobs`
   })
 

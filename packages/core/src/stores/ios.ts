@@ -1,7 +1,21 @@
-import { fetchJson, sleep } from "./http"
-import { StoreError, type AppRef, type StoreClient, type StoreListing, type StoreReview, type StoreSearchResult } from "./types"
+import { fetchJson, fetchWithRetry, sleep } from "./http"
+import {
+  StoreError,
+  type AppRef,
+  type FetchContext,
+  type StoreClient,
+  type StoreListing,
+  type StoreReview,
+  type StoreSearchResult,
+} from "./types"
 
-/** Apple's public iTunes Search/Lookup API and customer-reviews RSS feed. No key required. */
+/**
+ * App Store data comes from three public sources, none of which needs a key:
+ * - iTunes Search/Lookup API for the listing and search
+ * - the customer-reviews RSS feed (up to 500 newest reviews per country)
+ * - the web API that apps.apple.com itself uses, as a fallback for reviews
+ *   when the RSS feed is empty or blocked
+ */
 
 interface ItunesApp {
   trackId: number
@@ -40,7 +54,14 @@ interface RssEntry {
   updated?: RssLabel
 }
 
+interface AmpReview {
+  id: string
+  attributes?: { date?: string; title?: string; review?: string; rating?: number; userName?: string }
+}
+
 const BASE = process.env.ITUNES_BASE_URL ?? "https://itunes.apple.com"
+const WEB = process.env.APPSTORE_WEB_URL ?? "https://apps.apple.com"
+const AMP_HOSTS = (process.env.APPSTORE_AMP_HOSTS ?? "https://amp-api-edge.apps.apple.com,https://amp-api.apps.apple.com").split(",")
 const num = (v: unknown) => (v == null || v === "" || Number.isNaN(Number(v)) ? null : Number(v))
 
 export function mapItunesApp(a: ItunesApp): StoreListing {
@@ -84,6 +105,122 @@ export function mapRssEntries(entries: RssEntry[] | RssEntry | undefined): Store
     }))
 }
 
+export function mapAmpReviews(data: AmpReview[] | undefined): StoreReview[] {
+  return (data ?? [])
+    .filter((r) => r.id && r.attributes)
+    .map((r) => ({
+      id: String(r.id),
+      author: r.attributes!.userName ?? null,
+      rating: num(r.attributes!.rating),
+      title: r.attributes!.title ?? null,
+      body: r.attributes!.review ?? null,
+      version: null,
+      date: r.attributes!.date ? new Date(r.attributes!.date) : null,
+    }))
+}
+
+async function rssReviews(ref: AppRef, max: number, ctx?: FetchContext) {
+  const out: StoreReview[] = []
+  for (let page = 1; page <= 10 && out.length < max; page++) {
+    let feed: { feed?: { entry?: RssEntry[] | RssEntry } }
+    try {
+      feed = await fetchJson(`${BASE}/${ref.country}/rss/customerreviews/page=${page}/id=${ref.storeId}/sortby=mostrecent/json`)
+    } catch (e) {
+      if (page === 1) throw e
+      break // later pages sometimes 400 when the feed runs out
+    }
+    const batch = mapRssEntries(feed.feed?.entry)
+    if (!batch.length) break
+    out.push(...batch)
+    ctx?.progress?.(Math.min(out.length, max), max)
+    await sleep(300)
+  }
+  return out.slice(0, max)
+}
+
+// ── apps.apple.com web API ──────────────────────────────────────────────────
+
+let cachedToken: { value: string; expires: number } | null = null
+const JWT = /eyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,}/g
+
+function jwtExpiry(token: string): number | null {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8")) as { exp?: number }
+    return typeof payload.exp === "number" ? payload.exp * 1000 : null
+  } catch {
+    return null
+  }
+}
+
+/** Finds the public bearer token the App Store website embeds in its page or scripts. */
+export function findToken(text: string): string | null {
+  for (const m of text.matchAll(JWT)) {
+    const exp = jwtExpiry(m[0])
+    if (exp && exp > Date.now()) return m[0]
+  }
+  return null
+}
+
+async function webToken(ref: AppRef): Promise<string> {
+  if (cachedToken && cachedToken.expires > Date.now() + 5 * 60_000) return cachedToken.value
+  const pageUrl = `${WEB}/${ref.country}/app/id${ref.storeId}`
+  const res = await fetchWithRetry(pageUrl, { headers: { accept: "text/html" } })
+  if (!res.ok) throw new StoreError(`HTTP ${res.status} from apps.apple.com`, res.status)
+  const html = await res.text()
+  // JWT characters are URL-safe, so the token is findable even inside URL-encoded page config.
+  let token = findToken(html)
+  if (!token) {
+    const scripts = [...html.matchAll(/<script[^>]+src="([^"]+\.js)"/g)].map((m) => new URL(m[1], WEB).toString()).slice(0, 8)
+    for (const src of scripts) {
+      const js = await fetchWithRetry(src).then((r) => (r.ok ? r.text() : ""))
+      token = findToken(js)
+      if (token) break
+    }
+  }
+  if (!token) throw new StoreError("Could not find the App Store web token (the website may have changed)")
+  cachedToken = { value: token, expires: jwtExpiry(token) ?? Date.now() + 6 * 3600_000 }
+  return token
+}
+
+const LOCALES: Record<string, string> = { en: "en-US", ar: "ar", tr: "tr", fr: "fr-FR", de: "de-DE", es: "es-ES", pt: "pt-BR", ja: "ja" }
+
+async function webReviews(ref: AppRef, max: number, ctx?: FetchContext) {
+  const token = await webToken(ref)
+  const headers = { authorization: `Bearer ${token}`, origin: WEB, referer: `${WEB}/`, accept: "application/json" }
+  const locale = LOCALES[ref.lang] ?? ref.lang
+  let lastError: unknown
+  for (const host of AMP_HOSTS) {
+    const out: StoreReview[] = []
+    let offset = 0
+    try {
+      while (out.length < max) {
+        const url =
+          `${host}/v1/catalog/${ref.country}/apps/${ref.storeId}/reviews?l=${encodeURIComponent(locale)}` +
+          `&offset=${offset}&limit=20&platform=web&additionalPlatforms=appletv%2Cipad%2Ciphone%2Cmac&sort=recent`
+        const res = await fetchWithRetry(url, { headers })
+        if (res.status === 401 || res.status === 403) {
+          cachedToken = null
+          throw new StoreError(`HTTP ${res.status} from ${new URL(host).hostname}`, res.status)
+        }
+        if (!res.ok) throw new StoreError(`HTTP ${res.status} from ${new URL(host).hostname}`, res.status)
+        const body = (await res.json()) as { data?: AmpReview[]; next?: string }
+        const batch = mapAmpReviews(body.data)
+        out.push(...batch)
+        ctx?.progress?.(Math.min(out.length, max), max)
+        const next = body.next ? new URL(body.next, host).searchParams.get("offset") : null
+        if (!batch.length || !next) break
+        offset = Number(next)
+        await sleep(250)
+      }
+      return out.slice(0, max)
+    } catch (e) {
+      if (out.length) return out.slice(0, max)
+      lastError = e
+    }
+  }
+  throw lastError instanceof Error ? lastError : new StoreError(String(lastError))
+}
+
 export const iosClient: StoreClient = {
   async listing(ref: AppRef) {
     const data = await fetchJson<{ resultCount: number; results: ItunesApp[] }>(
@@ -94,23 +231,33 @@ export const iosClient: StoreClient = {
     return mapItunesApp(app)
   },
 
-  async reviews(ref: AppRef, max: number) {
-    // The RSS feed serves at most 10 pages of 50 reviews.
-    const out: StoreReview[] = []
-    for (let page = 1; page <= 10 && out.length < max; page++) {
-      let feed: { feed?: { entry?: RssEntry[] | RssEntry } }
-      try {
-        feed = await fetchJson(`${BASE}/${ref.country}/rss/customerreviews/page=${page}/id=${ref.storeId}/sortby=mostrecent/json`)
-      } catch (e) {
-        if (page === 1) throw e
-        break // later pages sometimes 400 when the feed runs out
-      }
-      const batch = mapRssEntries(feed.feed?.entry)
-      if (!batch.length) break
-      out.push(...batch)
-      await sleep(400)
+  async reviews(ref: AppRef, max: number, ctx?: FetchContext) {
+    let rss: StoreReview[] = []
+    let rssError: string | null = null
+    try {
+      rss = await rssReviews(ref, max, ctx)
+    } catch (e) {
+      rssError = (e as Error).message
     }
-    return out.slice(0, max)
+    if (rss.length) {
+      ctx?.note?.(`App Store RSS feed: ${rss.length} reviews`)
+      return rss
+    }
+    ctx?.note?.(
+      rssError
+        ? `App Store RSS feed failed (${rssError}), trying the App Store web API`
+        : "App Store RSS feed returned no reviews, trying the App Store web API",
+    )
+    try {
+      const web = await webReviews(ref, max, ctx)
+      ctx?.note?.(`App Store web API: ${web.length} reviews`)
+      return web
+    } catch (e) {
+      const webError = (e as Error).message
+      if (rssError) throw new StoreError(`RSS feed: ${rssError}; web API: ${webError}`)
+      ctx?.note?.(`App Store web API failed: ${webError}`)
+      return [] // RSS worked and was genuinely empty
+    }
   },
 
   async search(term, country, _lang, limit) {
@@ -127,4 +274,9 @@ export const iosClient: StoreClient = {
       url: a.trackViewUrl ?? null,
     }))
   },
+}
+
+/** Test hook */
+export const _resetTokenCache = () => {
+  cachedToken = null
 }

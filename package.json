@@ -15,7 +15,8 @@
     "typecheck": "pnpm -r typecheck",
     "build": "pnpm --filter @lens/web build",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "doctor": "pnpm --filter @lens/core doctor"
   },
   "devDependencies": {
     "prettier": "^3.9.9"

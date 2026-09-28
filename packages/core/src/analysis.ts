@@ -1,6 +1,7 @@
 import { chat, parseJsonReply } from "./ai"
 import { db } from "./db"
 import { aiConfigured, getSettings, type Settings } from "./settings"
+import { mapLimit } from "./sync"
 
 export const TOPICS = [
   "Pricing",
@@ -80,7 +81,10 @@ export interface AnalyseResult {
  * Classifies unanalysed reviews in batches, then aggregates the latest reviews
  * into sentiment counts, top complaints/requests and a short summary.
  */
-export async function analyseApp(appId: string, opts: { batchSize?: number; log?: (m: string) => void } = {}): Promise<AnalyseResult> {
+export async function analyseApp(
+  appId: string,
+  opts: { batchSize?: number; concurrency?: number; log?: (m: string) => void; onProgress?: (m: string) => void } = {},
+): Promise<AnalyseResult> {
   const settings = await getSettings()
   if (!aiConfigured(settings)) throw new Error("AI provider is not configured. Add a base URL and model in Settings.")
   const sql = db()
@@ -93,18 +97,26 @@ export async function analyseApp(appId: string, opts: { batchSize?: number; log?
       select * from reviews where app_id = ${appId} order by reviewed_at desc nulls last limit ${limit}
     ) r where analysed_at is null`
 
+  // Batches run a few at a time; each batch is saved with a single statement.
   let classified = 0
-  for (let i = 0; i < pending.length; i += batchSize) {
-    const batch = pending.slice(i, i + batchSize)
+  let done = 0
+  const batches = Array.from({ length: Math.ceil(pending.length / batchSize) }, (_, i) => pending.slice(i * batchSize, (i + 1) * batchSize))
+  await mapLimit(batches, opts.concurrency ?? 3, async (batch) => {
     const items = await classifyBatch(settings.ai, batch)
-    for (const it of items) {
-      await sql`update reviews set sentiment = ${it.sentiment}, topic = ${it.topic}, label = ${it.label || null},
-        label_kind = ${it.kind}, analysed_at = now() where app_id = ${appId} and review_id = ${it.id}`
+    if (items.length) {
+      await sql`
+        update reviews r set sentiment = v.sentiment, topic = v.topic, label = nullif(v.label, ''), label_kind = v.kind, analysed_at = now()
+        from unnest(${items.map((i) => i.id)}::text[], ${items.map((i) => i.sentiment)}::text[], ${items.map((i) => i.topic)}::text[],
+                    ${items.map((i) => i.label)}::text[], ${items.map((i) => i.kind)}::text[]) as v(id, sentiment, topic, label, kind)
+        where r.app_id = ${appId} and r.review_id = v.id`
     }
     classified += items.length
+    done += batch.length
     log(`classified ${classified}/${pending.length}`)
-  }
+    opts.onProgress?.(`Analysing reviews ${done}/${pending.length}`)
+  })
 
+  opts.onProgress?.("Summarising complaints and requests")
   const recent = sql`select * from reviews where app_id = ${appId} and analysed_at is not null order by reviewed_at desc nulls last limit ${limit}`
   const [counts] = await sql<{ positive: number; neutral: number; negative: number; total: number }[]>`
     select count(*) filter (where sentiment = 'positive')::int as positive,
