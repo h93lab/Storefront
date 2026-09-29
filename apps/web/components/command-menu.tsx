@@ -3,7 +3,19 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { useTheme } from "next-themes"
-import { Bookmark, GitCompare, History, LayoutDashboard, Library, Moon, RefreshCw, Search, Settings } from "lucide-react"
+import {
+  Bookmark,
+  ClipboardPaste,
+  GitCompare,
+  History,
+  LayoutDashboard,
+  Lightbulb,
+  Library,
+  Moon,
+  RefreshCw,
+  Search,
+  Settings,
+} from "lucide-react"
 import { toast } from "sonner"
 import { syncAllAction } from "@/app/actions"
 import { AppIcon } from "@/components/app-icon"
@@ -83,6 +95,8 @@ export function CommandMenu({ apps }: { apps: CommandApp[] }) {
               ["/", "Dashboard", LayoutDashboard],
               ["/apps", "Library", Library],
               ["/boards", "Boards", Bookmark],
+              ["/opportunities", "Opportunities", Lightbulb],
+              ["/import", "Import", ClipboardPaste],
               ["/compare", "Compare", GitCompare],
               ["/changes", "Changes", History],
               ["/settings", "Settings", Settings],

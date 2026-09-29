@@ -75,6 +75,15 @@ export default async function DashboardPage() {
         />
       </div>
 
+      <div className="grid grid-cols-2 gap-3 sm:gap-4">
+        <Link href="/opportunities" className="rounded-xl outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          <StatCard label="Opportunities surfaced" value={stats.opportunities} hint="Open the ranked list" />
+        </Link>
+        <Link href="/opportunities" className="rounded-xl outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          <StatCard label="WTP signals · 30d" value={stats.signals.toLocaleString()} hint="Willingness-to-pay mentions" />
+        </Link>
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>

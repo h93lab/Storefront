@@ -8,7 +8,17 @@ import {
   deleteBoard,
   enqueue,
   getSettings,
+  importItems,
+  mergeOpportunities,
   parseStoreUrl,
+  recordOutcome,
+  saveGate,
+  saveSpec,
+  setAppOwn,
+  setOpportunityStatus,
+  updateOpportunity,
+  type OpportunityKind,
+  type OpportunityStatus,
   removeApp,
   runDiagnostics,
   type Check,
@@ -174,4 +184,92 @@ export async function setAppLanguageAction(appId: string, lang: string) {
     await enqueue("sync_app", { appId })
     revalidatePath(`/apps/${appId}`)
   }, "Review language changed. A sync was queued to fetch reviews in that language.")
+}
+
+/* ------------------------------------------------------------ opportunities */
+
+export async function groupLabelsAction() {
+  return run(() => enqueue("group_labels"), "Grouping queued")
+}
+
+export async function generateSpecAction(id: number) {
+  return run(async () => {
+    const s = await getSettings()
+    if (!s.ai.baseUrl || !s.ai.model) throw new Error("Add an AI provider in Settings first.")
+    return enqueue("generate_spec", { opportunityId: id })
+  }, "Spec generation queued")
+}
+
+export async function saveGateAction(id: number, gate: { checks: Record<string, boolean>; notes?: string }) {
+  return run(async () => {
+    await saveGate(id, gate)
+    revalidatePath(`/opportunities/${id}`)
+  }, "Gate saved")
+}
+
+export async function saveSpecAction(id: number, md: string) {
+  return run(async () => {
+    await saveSpec(id, md)
+    revalidatePath(`/opportunities/${id}`)
+  }, "Spec saved")
+}
+
+export async function setOpportunityStatusAction(
+  id: number,
+  status: OpportunityStatus,
+  opts: { reason?: string | null; revisitAfter?: string | null } = {},
+) {
+  return run(async () => {
+    await setOpportunityStatus(id, status, opts)
+    revalidatePath("/", "layout")
+  }, "Status updated")
+}
+
+export async function recordOutcomeAction(
+  id: number,
+  outcome: { installs?: number; trial_starts?: number; paying?: number; notes?: string },
+) {
+  return run(async () => {
+    await recordOutcome(id, outcome)
+    revalidatePath(`/opportunities/${id}`)
+  }, "Outcome saved")
+}
+
+export async function updateOpportunityAction(id: number, patch: { label?: string; notes?: string | null; kind?: OpportunityKind }) {
+  return run(async () => {
+    await updateOpportunity(id, patch)
+    revalidatePath("/opportunities", "layout")
+  }, "Saved")
+}
+
+export async function mergeOpportunitiesAction(fromId: number, intoId: number) {
+  return run(async () => {
+    await mergeOpportunities(fromId, intoId)
+    revalidatePath("/", "layout")
+  }, "Opportunities merged")
+}
+
+export async function importItemsAction(input: { text: string; source: string; url?: string; appId?: string }) {
+  return run(async () => {
+    const items = input.text
+      .split(/\r?\n\s*\r?\n/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .map((body) => ({ body, source: input.source, url: input.url?.trim() || null, appId: input.appId || null }))
+    if (!items.length) throw new Error("Paste at least one item.")
+    const r = await importItems(items)
+    if (r.inserted > 0) await enqueue("analyse_items")
+    revalidatePath("/", "layout")
+    return r
+  })
+}
+
+export async function setAppOwnAction(appId: string, own: boolean) {
+  return run(
+    async () => {
+      await setAppOwn(appId, own)
+      revalidatePath("/", "layout")
+    },
+    own ? "Marked as your app" : "No longer marked as your app",
+  )
 }

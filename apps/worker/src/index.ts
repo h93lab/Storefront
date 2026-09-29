@@ -2,6 +2,7 @@ import { Cron } from "croner"
 import {
   aiConfigured,
   analyseApp,
+  analyseItems,
   claimJob,
   closeDb,
   db,
@@ -9,8 +10,10 @@ import {
   env,
   failJob,
   finishJob,
+  generateSpec,
   getInsights,
   getSettings,
+  groupLabels,
   isTransient,
   MAX_ATTEMPTS,
   queueReanalysis,
@@ -87,6 +90,19 @@ async function run(job: Job, signal: AbortSignal): Promise<string> {
       const n = await queueReanalysis()
       return `Queued analysis for ${n} app${n === 1 ? "" : "s"}`
     }
+    case "group_labels": {
+      const r = await groupLabels({ log: (m) => log(m, { job: job.id }), onProgress, signal })
+      return `${r.mapped} labels mapped to existing opportunities · ${r.created} new opportunities`
+    }
+    case "generate_spec": {
+      const opportunityId = String(job.payload.opportunityId ?? "")
+      const md = await generateSpec(opportunityId, { log: (m) => log(m, { job: job.id, opportunityId }), onProgress, signal })
+      return `Spec written for opportunity ${opportunityId} (${md.length} chars)`
+    }
+    case "analyse_items": {
+      const r = await analyseItems({ log: (m) => log(m, { job: job.id }), onProgress, signal })
+      return `${r.classified} imported items classified`
+    }
     default:
       throw new Error(`Unknown job type ${job.type}`)
   }
@@ -155,6 +171,7 @@ async function refreshSchedule() {
       async () => {
         log("scheduled sync")
         await enqueue("sync_all")
+        await enqueue("group_labels")
       },
     )
     scheduleExpr = sync.cron

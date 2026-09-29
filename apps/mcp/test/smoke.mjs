@@ -16,7 +16,7 @@ assert(bad.status === 401, "rejects requests without a token")
 const client = new Client({ name: "smoke", version: "1" })
 await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }))
 const { tools } = await client.listTools()
-assert(tools.length === 15, `lists ${tools.length} tools`)
+assert(tools.length === 23, `lists ${tools.length} tools`)
 const call = async (name, args = {}) => {
   const r = await client.callTool({ name, arguments: args })
   let data = null
@@ -60,6 +60,41 @@ const { r: badLink } = await call("add_app", { link_or_id: "not a link" })
 assert(badLink.isError, "add_app rejects invalid links")
 const { data: added } = await call("add_app", { link_or_id: "https://apps.apple.com/eg/app/x/id1234567890" })
 assert(added.status === "sync queued", "add_app queues a sync")
+
+const { data: imp } = await call("import_items", {
+  items: [
+    { body: "I wish there was a way to export my streak history to CSV. Smoke test." },
+    { body: "  i wish there was a way to export my streak   history to csv. smoke test. " },
+  ],
+})
+assert(imp.inserted + imp.skipped === 2 && imp.skipped >= 1, `import_items skips the duplicate (${JSON.stringify(imp)})`)
+const { data: found } = await call("search_reviews", { signal: "any", limit: 5 })
+assert(Array.isArray(found.evidence) && typeof found.total === "number", "search_reviews with signal any returns evidence")
+const { data: opps } = await call("list_opportunities", { status: "all", own: "all" })
+assert(Array.isArray(opps) && opps.length > 0, `list_opportunities returns ${opps.length} opportunities`)
+const oid = opps[0].id
+const { data: opp } = await call("get_opportunity", { opportunity_id: oid, limit: 5 })
+assert(opp.evidence.length > 0 && opp.evidence.length <= 5 && opp.labels.length > 0, "get_opportunity returns evidence and labels")
+const { r: badGate } = await call("save_gate_result", { opportunity_id: oid, checks: { scope: true, nonsense: true } })
+assert(badGate.isError, "save_gate_result rejects an unknown key")
+const { data: gate } = await call("save_gate_result", { opportunity_id: oid, checks: { scope: true, permissions: false }, notes: "smoke" })
+assert(gate.checks.scope === true && gate.checks.permissions === false, "save_gate_result saves checks")
+const { data: st } = await call("set_opportunity_status", { opportunity_id: oid, status: "validating" })
+assert(st.status === "validating", "set_opportunity_status updates the status")
+const { data: out } = await call("record_outcome", { opportunity_id: oid, installs: 120, trial_starts: 4, paying: 1 })
+assert(out.installs === 120, "record_outcome saves the outcome")
+const { data: sp } = await call("save_spec", { opportunity_id: oid, spec_md: "## 1. Problem\nSmoke spec" })
+assert(sp.saved, "save_spec saves the spec")
+const { data: after } = await call("get_opportunity", { opportunity_id: oid, limit: 1 })
+assert(
+  after.status === "validating" &&
+    after.spec_md?.includes("Smoke spec") &&
+    after.outcome?.paying === 1 &&
+    after.gate?.checks?.scope === true,
+  "get_opportunity reflects the saved state",
+)
+const { r: noOpp } = await call("get_opportunity", { opportunity_id: 999999 })
+assert(noOpp.isError, "unknown opportunity returns a tool error")
 await client.close()
 
 const viaPath = await fetch(`${url}/${token}`, {

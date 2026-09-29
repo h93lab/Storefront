@@ -7,6 +7,9 @@ pnpm monorepo (Node 22, pnpm 10). Personal, self-hosted app-store reference libr
 - Mutations go through server actions in `apps/web/app/actions.ts`. Long work is queued with `enqueue()` and run by `apps/worker`.
 - Schema changes: add a new numbered file in `db/migrations/`; never edit an applied one. The worker applies them on start.
 - Postgres access uses `postgres` (porsager) with `prepare: false` for the Supabase transaction pooler. Cast `numeric`/`bigint` to `float8`/`int` in queries that return them.
+- Opportunities live in `packages/core/src/opportunities.ts`: evidence is reviews ∪ items, grouped by `opportunity_labels` on `lower(trim(label))`. The score is computed in SQL (`statsSelect`) and mirrored by `opportunityScore()`; change both together.
+- Never call the model from `apps/mcp`. LLM work (analysis, `group_labels`, `generate_spec`, `analyse_items`) runs as worker jobs; MCP tools only enqueue.
+- Google Play apps are one row per `store_id` (reviews are not per country); iOS may be tracked per country. Count listings per `(store, store_id)`, never per app row.
 
 Checks before pushing: `pnpm format:check && pnpm typecheck && TEST_DATABASE_URL=… pnpm test && pnpm build`.
 

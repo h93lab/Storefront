@@ -14,6 +14,9 @@ const TITLES: [string, string][] = [
   ["/apps", "Library"],
   ["/boards/", "Board"],
   ["/boards", "Boards"],
+  ["/opportunities/", "Opportunity"],
+  ["/opportunities", "Opportunities"],
+  ["/import", "Import"],
   ["/compare", "Compare"],
   ["/changes", "Changes"],
   ["/settings", "Settings"],
@@ -25,9 +28,11 @@ export function SiteHeader({ apps }: { apps: CommandApp[] }) {
   // Detail pages get a back link to their list instead of a generic label.
   const parent = pathname.startsWith("/apps/")
     ? { href: "/apps", label: "Library" }
-    : pathname.startsWith("/boards/")
-      ? { href: "/boards", label: "Boards" }
-      : null
+    : pathname.startsWith("/opportunities/")
+      ? { href: "/opportunities", label: "Opportunities" }
+      : pathname.startsWith("/boards/")
+        ? { href: "/boards", label: "Boards" }
+        : null
   return (
     <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <SidebarTrigger className="-ml-1" />

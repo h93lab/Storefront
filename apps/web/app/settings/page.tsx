@@ -31,6 +31,14 @@ const TOOLS = [
   "get_board",
   "create_board",
   "save_to_board",
+  "list_opportunities",
+  "get_opportunity",
+  "search_reviews",
+  "save_gate_result",
+  "save_spec",
+  "set_opportunity_status",
+  "record_outcome",
+  "import_items",
 ]
 
 export default async function SettingsPage() {

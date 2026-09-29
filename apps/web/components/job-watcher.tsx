@@ -14,7 +14,14 @@ export interface WatchedJob {
   run_after: string
 }
 
-const LABEL: Record<string, string> = { sync_app: "Syncing", sync_all: "Queuing all apps", analyse_app: "Analysing reviews" }
+const LABEL: Record<string, string> = {
+  sync_app: "Syncing",
+  sync_all: "Queuing all apps",
+  analyse_app: "Analysing reviews",
+  analyse_items: "Analysing imported items",
+  group_labels: "Grouping labels",
+  generate_spec: "Writing the spec",
+}
 
 /**
  * Polls a light endpoint while jobs are active and refreshes the page once

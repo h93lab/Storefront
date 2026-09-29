@@ -13,11 +13,21 @@ import {
   getInsights,
   getReviews,
   getScreenshot,
+  getOpportunity,
   getScreenshots,
+  importItems,
   listApps,
+  listOpportunities,
   listBoards,
+  GATE_KEYS,
+  OPPORTUNITY_STATUSES,
   parseStoreUrl,
+  recordOutcome,
   resolveMediaPath,
+  saveGate,
+  saveSpec,
+  searchEvidence,
+  setOpportunityStatus,
   signalCounts,
   storeClient,
   topicCounts,
@@ -453,6 +463,186 @@ export function buildServer() {
           ? await addBoardItem(board_id, { kind: "screenshot", screenshotId: screenshot_id, note })
           : await addBoardItem(board_id, { kind: "review", appId: app_id!, reviewId: review_id!, note })
         return json({ item_id: id, saved: id !== null, note: id === null ? "Already on this board" : undefined })
+      } catch (e) {
+        return fail((e as Error).message)
+      }
+    },
+  )
+
+  const oppId = z.number().int().min(1).describe("Opportunity id from list_opportunities")
+  const oppLink = (id: number) => `${env.publicUrl}/opportunities/${id}`
+  const notFound = (id: number) => fail(`No opportunity with id ${id}. Use list_opportunities to find ids.`)
+  /** Runs a core mutation and turns its validation errors into tool errors. */
+  const attempt = async (fn: () => Promise<unknown>) => {
+    try {
+      return json(await fn())
+    } catch (e) {
+      return fail((e as Error).message)
+    }
+  }
+
+  server.registerTool(
+    "list_opportunities",
+    {
+      title: "List opportunities",
+      description:
+        "Product opportunities ranked by score: recurring complaints and feature requests mined from reviews and imported items, " +
+        "grouped across apps. Each row has a kind (complaint or request), status, evidence count, number of app listings, " +
+        "average pain 0-5, willingness-to-pay signal counts, named competitors, last seen date and a score. " +
+        "By default killed opportunities are hidden and competitor apps only (own apps excluded). Use get_opportunity for the evidence.",
+      inputSchema: {
+        status: z
+          .enum(["active", "all", ...OPPORTUNITY_STATUSES])
+          .optional()
+          .describe("active (default) = everything except killed"),
+        kind: z.enum(["complaint", "request"]).optional(),
+        own: z.enum(["exclude", "only", "all"]).optional().describe("exclude (default) = competitors only, only = my own apps' feedback"),
+        query: z.string().optional().describe("Matches label and notes"),
+        limit: z.number().int().min(1).max(200).optional().describe("Default 50"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ status, kind, own, query, limit }) => {
+      const rows = await listOpportunities({ status, kind, own, q: query })
+      return json(rows.slice(0, limit ?? 50).map((o) => ({ ...o, url: oppLink(o.id) })))
+    },
+  )
+
+  server.registerTool(
+    "get_opportunity",
+    {
+      title: "Get opportunity",
+      description:
+        "One opportunity with its statistics, the review and imported-item evidence behind it (verbatim quote, app, store, country, " +
+        "rating, willingness-to-pay signal, competitor, workaround, pain), the grouped labels, the validation gate, spec, outcome and status.",
+      inputSchema: { opportunity_id: oppId, limit: z.number().int().min(1).max(200).optional().describe("Max evidence rows, default 50") },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ opportunity_id, limit }) => {
+      const o = await getOpportunity(opportunity_id)
+      if (!o) return notFound(opportunity_id)
+      return json({ ...o, evidence_total: o.n, evidence: o.evidence.slice(0, limit ?? 50), url: oppLink(o.id) })
+    },
+  )
+
+  server.registerTool(
+    "search_reviews",
+    {
+      title: "Search reviews and items",
+      description:
+        `Cross-app evidence search over stored reviews and imported items (forum posts, support tickets). Each hit carries the AI label, ` +
+        `willingness-to-pay signal (${WTP_SIGNALS.join(", ")}; any = every signal except none), competitor, workaround, evidence quote and pain 0-5. ` +
+        "Only analysed rows have signals and labels. Own apps are excluded.",
+      inputSchema: {
+        query: z.string().optional().describe("Text search in title, body and evidence quote"),
+        signal: z.enum(["any", ...WTP_SIGNALS]).optional(),
+        label: z.string().optional().describe("Substring of the AI label"),
+        min_pain: z.number().int().min(0).max(5).optional(),
+        limit: z.number().int().min(1).max(200).optional().describe("Default 50"),
+        offset: z.number().int().min(0).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ query, signal, label, min_pain, limit, offset }) => {
+      const { rows, total } = await searchEvidence({ q: query, signal, label, minPain: min_pain, limit: limit ?? 50, offset })
+      return json({ total, returned: rows.length, evidence: rows })
+    },
+  )
+
+  server.registerTool(
+    "save_gate_result",
+    {
+      title: "Save gate result",
+      description:
+        "Record the founder validation gate for an opportunity: eight yes/no checks (true = pass). Failing permissions, single_player or " +
+        "data_legal is permanent: the idea should be killed, not retried. Unknown check names are rejected. Replaces the previous gate result.",
+      inputSchema: {
+        opportunity_id: oppId,
+        checks: z.record(z.string(), z.boolean()).describe(`Keys: ${GATE_KEYS.join(", ")}`),
+        notes: z.string().max(4000).optional(),
+      },
+    },
+    async ({ opportunity_id, checks, notes }) => attempt(() => saveGate(opportunity_id, { checks, notes })),
+  )
+
+  server.registerTool(
+    "save_spec",
+    {
+      title: "Save spec",
+      description:
+        "Store a build spec (Markdown) on an opportunity, replacing any existing spec. It is shown on the opportunity's Spec tab.",
+      inputSchema: { opportunity_id: oppId, spec_md: z.string().min(1).max(100_000) },
+    },
+    async ({ opportunity_id, spec_md }) => attempt(async () => (await saveSpec(opportunity_id, spec_md), { saved: true })),
+  )
+
+  server.registerTool(
+    "set_opportunity_status",
+    {
+      title: "Set opportunity status",
+      description:
+        `Move an opportunity through its lifecycle (${OPPORTUNITY_STATUSES.join(" > ")}). Killing it records the reason and an optional ` +
+        "date to revisit; any other status clears them. Grouping keeps mapping duplicate labels onto killed opportunities.",
+      inputSchema: {
+        opportunity_id: oppId,
+        status: z.enum(OPPORTUNITY_STATUSES),
+        reason: z.string().max(1000).optional().describe("Why it was killed"),
+        revisit_after: z.string().optional().describe("ISO date to look at a killed idea again"),
+      },
+    },
+    async ({ opportunity_id, status, reason, revisit_after }) =>
+      attempt(async () => (await setOpportunityStatus(opportunity_id, status, { reason, revisitAfter: revisit_after }), { status })),
+  )
+
+  server.registerTool(
+    "record_outcome",
+    {
+      title: "Record outcome",
+      description:
+        "Record real-world results of a shipped opportunity. Kill criteria at day 60: fewer than 100 installs, under 2% trial starts, " +
+        "or fewer than 1 paying customer per 100 installs.",
+      inputSchema: {
+        opportunity_id: oppId,
+        installs: z.number().int().min(0).optional(),
+        trial_starts: z.number().int().min(0).optional(),
+        paying: z.number().int().min(0).optional(),
+        notes: z.string().max(4000).optional(),
+      },
+    },
+    async ({ opportunity_id, installs, trial_starts, paying, notes }) =>
+      attempt(() => recordOutcome(opportunity_id, { installs, trial_starts, paying, notes })),
+  )
+
+  server.registerTool(
+    "import_items",
+    {
+      title: "Import items",
+      description:
+        "Import text from outside the stores (Reddit threads, support tickets, forum posts) as evidence. Duplicates are skipped. " +
+        "Analysis and grouping are queued in the background, so new items appear in opportunities after a minute or two.",
+      inputSchema: {
+        items: z
+          .array(
+            z.object({
+              body: z.string().min(1).max(8000),
+              url: z.string().optional(),
+              author: z.string().optional(),
+              app_id: uuid.optional().describe("Library app this text is about"),
+              source: z.string().max(40).optional().describe("paste (default), reddit, support or other"),
+              posted_at: z.string().optional().describe("ISO date"),
+            }),
+          )
+          .min(1)
+          .max(200),
+      },
+    },
+    async ({ items }) => {
+      try {
+        const r = await importItems(
+          items.map((i) => ({ body: i.body, url: i.url, author: i.author, appId: i.app_id, source: i.source, postedAt: i.posted_at })),
+        )
+        if (r.inserted > 0) await enqueue("analyse_items")
+        return json(r)
       } catch (e) {
         return fail((e as Error).message)
       }

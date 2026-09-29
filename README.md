@@ -1,10 +1,10 @@
 # Storefront Lens
 
-A private, self-hosted library of App Store and Google Play apps: listings, screenshots, reviews, AI review analysis, change tracking and project boards. It includes an MCP server so any AI agent can use the library.
+A private, self-hosted library of App Store and Google Play apps: listings, screenshots, reviews, AI review analysis, change tracking, project boards and an opportunity radar (H93) that groups recurring complaints and requests across apps into ranked product opportunities. It includes an MCP server so any AI agent can use the library.
 
 - **Web UI**: Next.js 16 + [shadcn/ui](https://ui.shadcn.com) (neutral theme, light and dark)
 - **Worker**: syncs every app on a schedule, detects changes, runs the AI analysis
-- **MCP server**: 15 tools over Streamable HTTP, protected by a bearer token
+- **MCP server**: 23 tools over Streamable HTTP, protected by a bearer token
 - **Storage**: data in Supabase Postgres (or local Postgres); images as WebP on your server's disk
 
 ---
@@ -129,6 +129,28 @@ Claude Desktop و Cursor وغيرهم (JSON):
 
 بيحفظ الداتابيز والصور في `backups/`. مع Supabase لازم `DATABASE_BACKUP_URL` في `.env` يكون الـ **Session pooler** (port `5432`)، لأن `pg_dump` مابيشتغلش على الـ transaction pooler.
 
+### 9) الفرص (H93)
+
+الفرصة (opportunity) هي شكوى أو طلب بيتكرر في تعليقات أكتر من تطبيق، يعني حاجة ناقصة الناس عايزاها ("Offline mode — sleep stories" مثلاً). المنصة بتجمع كل التعليقات المتشابهة تحت فرصة واحدة وبترتبها بسكور.
+
+الخطوات:
+
+1. ضيف التطبيقات المنافسة واستنى الـ sync.
+2. التحليل بيشتغل لوحده بعد الـ sync (لازم الـ AI يكون متظبط في Settings).
+3. بعد التحليل بيتشغل تجميع الـ labels (`group_labels`) لوحده، وكمان كل ليلة مع الـ sync. تقدر تشغله بإيدك من صفحة الفرص.
+4. افتح **/opportunities**. الفرص مترتبة بالسكور، وكل فرصة فيها الاقتباسات الحرفية من التعليقات.
+
+جوه أي فرصة:
+
+- **الـ Gate**: 8 أسئلة نعم/لا تجاوب عليها قبل ما تبني. لو فشلت في `permissions` أو `single_player` أو `data_legal` يبقى الفكرة تتقتل، مش تتعاد.
+- **Generate spec**: بيكتب لك مواصفات بناء كاملة (Markdown) من الأدلة، بتلاقيها في تاب Spec وتقدر تنسخها أو تنزلها.
+- **Import** (صفحة `/import`): الزق نصوص من بره المتاجر (Reddit، إيميلات دعم، منتديات). بتتحلل وبتدخل كأدلة مع التعليقات. النص المكرر بيتتجاهل.
+- **This is my app**: من صفحة التطبيق علّم تطبيقك انت. أدلته بتتشال من قوائم الفرص لحد ما تختار "own only".
+
+نصيحة: لو التطبيق على iOS وعايز تغطي أكتر من دولة، ضيفه مرة لكل دولة (الـ store id واحد). الفرصة بتعدّ التطبيق مرة واحدة بس مهما كان عدد الدول. أما Google Play فالتعليقات مش بتختلف بالدولة، فالتطبيق بيتضاف مرة واحدة بس، ولو حاولت تضيفه بدولة تانية هيرفض. غيّر لغة التعليقات بدل كده.
+
+الفرص اللي تقتلها بتفضل مخفية (المقبرة)، وأي label جديد بنفس المعنى بيتربط بيها تلقائي ومش بيرجع يظهر كفرصة مكررة.
+
 ### التحديث
 
 ```bash
@@ -181,7 +203,7 @@ docker compose exec worker node_modules/.bin/tsx ../../packages/core/src/cli/doc
 apps/web      Next.js UI (shadcn/ui), server actions, /media route for stored images
 apps/worker   Job runner + cron schedule (croner). Runs migrations on start.
 apps/mcp      Stateless MCP server (Streamable HTTP, JSON responses), bearer-token auth
-packages/core Store clients, sync pipeline, change detection, AI analysis, queries
+packages/core Store clients, sync pipeline, change detection, AI analysis, opportunities.ts (label grouping, evidence, score, gate, specs), queries
 db/migrations SQL schema, applied automatically
 ```
 
@@ -194,6 +216,37 @@ The web app and the MCP server enqueue jobs in the `jobs` table; the worker clai
 **Jobs** report live progress, retry transient failures (timeouts, 429, 5xx, network) up to 3 times with backoff, and run two at a time without ever syncing the same app twice. A job interrupted by a restart is requeued on the next start.
 
 **AI analysis**: unanalysed reviews go to the configured model in batches of 20 (three in parallel) and come back with sentiment, one of 11 fixed topics, a short complaint/request label, and opportunity signals: a willingness-to-pay signal (`paying_competitor`, `churned`, `workaround`, `stated_wtp` or `none`), any competitor named, the workaround described, a verbatim evidence quote (dropped unless it appears in the review word for word) and a pain score 0–5. The model's raw item is kept in `reviews.raw_analysis`. A second call merges similar labels into the top complaints and requests and writes a short summary. Each review records the `analysis_version` it was classified with; when the classifier changes, **Settings → Re-analyse all apps** (or the `analyse_all` job) sends older rows through again.
+
+### Opportunities (H93)
+
+**Model.** An opportunity is one recurring missing capability ("Offline mode — sleep stories"). The `group_labels` job takes every distinct `lower(trim(label))` of complaint/request reviews and imported items that is not yet in `opportunity_labels`, and asks the model (batches of 120) to map each onto an existing opportunity or to form new ones. There are no embeddings. Canonical labels are `<missing capability> — <context>`, at most 60 characters, without app names. A label the model skips becomes an opportunity of its own; replies that are not valid JSON fall back to one opportunity per label. Evidence is the union of reviews and items joined through `opportunity_labels`. Merging two opportunities moves all labels onto one.
+
+**Score.** `recent × (1 + 0.5 × (listings − 1)) × (1 + avg_pain / 5) × (1 + 2 × wtp_share)`. `recent` is the evidence count weighted by a 90-day half-life (undated evidence counts as 180 days old). `listings` is the number of distinct `(store, store_id)` pairs with evidence (minimum 1), so one app tracked in five countries counts once. `avg_pain` is the mean pain score 0–5. `wtp_share` is the share of evidence whose signal is `paying_competitor`, `churned`, `workaround` or `stated_wtp`. The same formula lives in SQL (`statsSelect`) and in `opportunityScore()`. Lists exclude your own apps by default (`own`: `exclude`, `only`, `all`) and hide opportunities without evidence in the chosen view.
+
+**Gate.** Eight yes/no checks, saved with `checked_at` and notes. PASS means:
+
+| Key             | PASS                                                                                       |
+| --------------- | ------------------------------------------------------------------------------------------ |
+| `scope`         | Solo-dev scope: ≤4 weeks, ≤6 screens, ≤3 tables, no native modules                         |
+| `permissions`   | Works within iOS/Android foreground limits; no closed APIs or scraping                     |
+| `single_player` | Valuable to user #1 alone (no marketplace/social)                                          |
+| `monetization`  | One clear paid model; users already pay a competitor or a workaround                       |
+| `demand`        | Competitor ≥1k ratings and ≤3.8★, or ≥15 independent complaints from 2+ sources in 90 days |
+| `distribution`  | The threads/subreddits/keyword where the pain lives allow launching there                  |
+| `data_legal`    | No sensitive PII (medical, financial credentials, minors), no copyrighted ingestion        |
+| `founder_fit`   | You can use it daily yourself                                                              |
+
+Failing `permissions`, `single_player` or `data_legal` is permanent: kill the idea instead of retrying.
+
+**Statuses.** `surfaced → validating → building → shipped → killed`. Killing stores a reason and an optional revisit date; any other status clears both. Killed opportunities are the graveyard: they stay in the list sent to the grouping model, so new labels that mean the same thing map onto them and stay hidden (default view is everything except killed). `record_outcome` stores installs, trial starts and paying customers for shipped ideas; day-60 kill criteria are under 100 installs, under 2% trial starts, or under 1 paying customer per 100 installs.
+
+**Spec.** `generate_spec` sends the 12 strongest quotes (willingness-to-pay signal, then pain) plus the stats, competitors and your notes to the model, and stores Markdown with nine sections: 1 Problem in the users' words (quotes Q1..Qn), 2 Target user and trigger moment, 3 MVP scope (exactly 5 features with Given/When/Then), 4 Non-goals, 5 Data model (Supabase SQL with RLS), 6 Screens and navigation, 7 Monetization, 8 Definition of done, 9 Task plan (tasks ≤2 hours). Default stack: Expo (React Native + TypeScript) + Supabase + RevenueCat + EAS. Agents can also write their own with `save_spec`.
+
+**Import and items.** `/import` and the `import_items` tool store outside text (paste, reddit, support, other) in `items`. A duplicate is the same `source` with the same normalised body (`md5(lower(whitespace-collapsed body))`) and is skipped. Items go through the same classifier as reviews (`analysis_version` 2), then labels are grouped.
+
+**Own apps.** **This is my app** on an app page (`setAppOwn`) marks it as yours; its reviews are left out of opportunity lists and `search_reviews` unless you ask for `own=only`. Google Play is one row per `store_id` (adding a second country is refused, change the review language instead); iOS can be tracked per country.
+
+**Jobs.** `group_labels` maps new labels (queued after a review analysis or item analysis classifies anything, from the opportunities page, and nightly after `sync_all` on the sync cron); `generate_spec` (payload `opportunityId`) is queued by the Generate spec button; `analyse_items` runs after an import; `analyse_all` re-analyses apps classified by an older `ANALYSIS_VERSION`. The MCP server never calls the model itself, it only enqueues these jobs.
 
 ### MCP tools
 
@@ -211,6 +264,14 @@ The web app and the MCP server enqueue jobs in the `jobs` table; the worker clai
 | `add_app`                                                   | Add by link or id and queue the first sync           |
 | `sync_app`                                                  | Queue a sync now                                     |
 | `list_boards`, `get_board`, `create_board`, `save_to_board` | Project boards                                       |
+| `list_opportunities`                                        | Opportunities ranked by score, with evidence stats   |
+| `get_opportunity`                                           | One opportunity: quotes, labels, gate, spec, outcome |
+| `search_reviews`                                            | Cross-app search over reviews and imported items     |
+| `save_gate_result`                                          | Record the eight-check validation gate               |
+| `save_spec`                                                 | Store a Markdown build spec on an opportunity        |
+| `set_opportunity_status`                                    | Move status; killing takes a reason and revisit date |
+| `record_outcome`                                            | Record installs, trial starts, paying customers      |
+| `import_items`                                              | Import outside text as evidence (deduplicated)       |
 
 ### Development
 

@@ -26,7 +26,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
           <TooltipProvider delayDuration={200}>
             <SidebarProvider>
-              <AppSidebar appCount={nav.apps.length} boardCount={nav.boards} />
+              <AppSidebar appCount={nav.apps.length} boardCount={nav.boards} opportunityCount={nav.opportunities} />
               <SidebarInset>
                 <SiteHeader apps={nav.apps} />
                 <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 p-4 md:p-6">{children}</div>

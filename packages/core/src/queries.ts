@@ -17,6 +17,7 @@ export interface AppSummary {
   version: string | null
   icon_path: string | null
   status: "pending" | "syncing" | "ready" | "error"
+  own: boolean
   last_error: string | null
   last_synced_at: Date | null
   created_at: Date
@@ -41,7 +42,7 @@ export interface AppDetail extends AppSummary {
 const appCols = (sql = db()) => sql`
   a.id, a.store, a.store_id, a.country, a.lang, a.name, a.developer, a.category,
   a.rating::float8 as rating, a.ratings_count::float8 as ratings_count, a.price, a.version, a.icon_path,
-  a.status, a.last_error, a.last_synced_at, a.created_at,
+  a.status, a.last_error, a.last_synced_at, a.created_at, a.own,
   coalesce((select array_agg(path order by position) from (
     select path, position from screenshots s where s.app_id = a.id and s.active and s.device = 'phone' order by position limit 3) p), '{}') as preview,
   (select field from changes c where c.app_id = a.id and c.detected_at > now() - interval '7 days' order by detected_at desc limit 1) as recent_change`
