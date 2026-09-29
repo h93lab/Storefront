@@ -321,11 +321,17 @@ export async function compareApps(ids: string[]) {
 /** Everything the app shell (sidebar, command menu) needs, in one round trip. */
 export async function navSummary() {
   const [row] = await db()<
-    { apps: { id: string; name: string; store: Store; icon: string | null }[] | null; boards: number; opportunities: number }[]
+    {
+      apps: { id: string; name: string; store: Store; icon: string | null }[] | null
+      boards: number
+      opportunities: number
+      verdicts: number
+    }[]
   >`
     select
       (select json_agg(json_build_object('id', id, 'name', coalesce(nullif(name, ''), store_id), 'store', store, 'icon', icon_path) order by created_at desc) from apps) as apps,
       (select count(*)::int from boards) as boards,
-      (select count(*)::int from opportunities where status <> 'killed') as opportunities`
-  return { apps: row.apps ?? [], boards: row.boards, opportunities: row.opportunities }
+      (select count(*)::int from opportunities where status <> 'killed') as opportunities,
+      (select count(*)::int from review_verdicts) as verdicts`
+  return { apps: row.apps ?? [], boards: row.boards, opportunities: row.opportunities, verdicts: row.verdicts }
 }

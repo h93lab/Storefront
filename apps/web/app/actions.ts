@@ -2,6 +2,14 @@
 
 import { revalidatePath } from "next/cache"
 import {
+  aiConfigured,
+  deleteVerdict,
+  embed,
+  recordVerdict,
+  saveValidationMetrics,
+  type Settings,
+  type VerdictCorrection,
+  type VerdictSource,
   addApp,
   addBoardItem,
   createBoard,
@@ -72,7 +80,7 @@ export async function syncAllAction() {
 export async function analyseAppAction(appId: string) {
   return run(async () => {
     const s = await getSettings()
-    if (!s.ai.baseUrl || !s.ai.model) throw new Error("Add an AI provider in Settings first.")
+    if (!aiConfigured(s)) throw new Error("Add an AI provider in Settings first.")
     return enqueue("analyse_app", { appId })
   }, "Analysis queued")
 }
@@ -81,7 +89,7 @@ export async function analyseAppAction(appId: string) {
 export async function reanalyseAllAction() {
   return run(async () => {
     const s = await getSettings()
-    if (!s.ai.baseUrl || !s.ai.model) throw new Error("Add an AI provider in Settings first.")
+    if (!aiConfigured(s)) throw new Error("Add an AI provider in Settings first.")
     return enqueue("analyse_all")
   }, "Re-analysis queued for all apps")
 }
@@ -123,15 +131,29 @@ export async function removeBoardItemAction(itemId: string) {
   }, "Removed from board")
 }
 
-export async function saveAiSettingsAction(input: { baseUrl: string; apiKey?: string; model: string; autoAnalyse: boolean }) {
+export async function saveAiSettingsAction(input: {
+  provider: Settings["ai"]["provider"]
+  baseUrl: string
+  apiKey?: string
+  model: string
+  autoAnalyse: boolean
+  batch: boolean
+}) {
   return run(async () => {
     const saved = (await getSettings()).ai
+    const provider = input.provider === "anthropic" ? "anthropic" : "openai"
     const baseUrl = input.baseUrl.trim()
-    const patch: Record<string, unknown> = { baseUrl, model: input.model.trim(), autoAnalyse: input.autoAnalyse }
-    // An empty key field keeps the saved key, but only for the same provider:
-    // never send a saved key to a different host.
+    const patch: Record<string, unknown> = {
+      provider,
+      baseUrl,
+      model: input.model.trim(),
+      autoAnalyse: input.autoAnalyse,
+      batch: provider === "anthropic" && input.batch,
+    }
+    // An empty key field keeps the saved key, but only for the same provider and host:
+    // never send a saved key to a different endpoint.
     if (input.apiKey) patch.apiKey = input.apiKey.trim()
-    else if (baseUrl !== saved.baseUrl) patch.apiKey = ""
+    else if (baseUrl !== saved.baseUrl || provider !== saved.provider) patch.apiKey = ""
     await saveSettings("ai", patch)
     revalidatePath("/settings")
   }, "AI settings saved")
@@ -144,17 +166,122 @@ export async function clearAiKeyAction() {
   }, "API key removed")
 }
 
-export async function testAiAction(input: { baseUrl: string; apiKey?: string; model: string }) {
+export async function testAiAction(input: { provider: Settings["ai"]["provider"]; baseUrl: string; apiKey?: string; model: string }) {
   return run(async () => {
     const saved = (await getSettings()).ai
+    const provider = input.provider === "anthropic" ? "anthropic" : "openai"
+    const baseUrl = input.baseUrl.trim()
+    const sameTarget = provider === saved.provider && baseUrl === saved.baseUrl
     const r = await testConnection({
       ...saved,
-      baseUrl: input.baseUrl.trim(),
+      provider,
+      baseUrl,
       model: input.model.trim(),
-      apiKey: input.apiKey?.trim() || saved.apiKey,
+      apiKey: input.apiKey?.trim() || (sameTarget ? saved.apiKey : ""),
     })
     return r.ms
   })
+}
+
+export async function saveEmbeddingSettingsAction(input: { baseUrl: string; apiKey?: string; model: string; dimensions: number }) {
+  return run(async () => {
+    const saved = (await getSettings()).ai.embedding
+    const baseUrl = input.baseUrl.trim()
+    const dimensions = Math.round(Number(input.dimensions))
+    if (!(dimensions >= 1 && dimensions <= 4096)) throw new Error("Dimensions must be between 1 and 4096.")
+    const embedding: Record<string, unknown> = { baseUrl, model: input.model.trim(), dimensions }
+    if (input.apiKey) embedding.apiKey = input.apiKey.trim()
+    else if (baseUrl !== saved.baseUrl) embedding.apiKey = ""
+    await saveSettings("ai", { embedding: embedding as Settings["ai"]["embedding"] })
+    revalidatePath("/settings")
+  }, "Embedding settings saved")
+}
+
+export async function clearEmbeddingKeyAction() {
+  return run(async () => {
+    await saveSettings("ai", { embedding: { apiKey: "" } as Settings["ai"]["embedding"] })
+    revalidatePath("/settings")
+  }, "Embedding key removed")
+}
+
+/** Embeds "hello" with the form's values (saved key when the field is empty) and returns the vector length. */
+export async function testEmbeddingAction(input: { baseUrl: string; apiKey?: string; model: string; dimensions: number }) {
+  return run(async () => {
+    const saved = (await getSettings()).ai.embedding
+    const baseUrl = input.baseUrl.trim()
+    const [vec] = await embed(
+      {
+        baseUrl,
+        model: input.model.trim(),
+        dimensions: Math.round(Number(input.dimensions)) || saved.dimensions,
+        apiKey: input.apiKey?.trim() || (baseUrl === saved.baseUrl ? saved.apiKey : ""),
+      },
+      ["hello"],
+    )
+    return vec.length
+  })
+}
+
+export async function saveScoreSettingsAction(input: Settings["score"]) {
+  return run(async () => {
+    const num = (v: unknown, name: string, min: number, max: number) => {
+      const n = Number(v)
+      if (!Number.isFinite(n) || n < min || n > max) throw new Error(`${name} must be between ${min} and ${max}.`)
+      return n
+    }
+    await saveSettings("score", {
+      listingWeight: num(input.listingWeight, "Listing weight", 0, 100),
+      painWeight: num(input.painWeight, "Pain weight", 0, 100),
+      wtpWeight: num(input.wtpWeight, "WTP weight", 0, 100),
+      halfLifeDays: num(input.halfLifeDays, "Half-life", 1, 3650),
+      autoMapThreshold: num(input.autoMapThreshold, "Auto-map threshold", 0.5, 1),
+    })
+    revalidatePath("/", "layout")
+  }, "Scoring saved")
+}
+
+export async function saveRedditSettingsAction(input: {
+  enabled: boolean
+  clientId: string
+  clientSecret?: string
+  userAgent: string
+  subreddits: string[]
+  keywords: string[]
+  limit: number
+}) {
+  return run(async () => {
+    const limit = Math.round(Number(input.limit))
+    if (!(limit >= 1 && limit <= 100)) throw new Error("Limit must be between 1 and 100.")
+    const list = (xs: string[], strip: RegExp) => [...new Set(xs.map((x) => x.trim().replace(strip, "")).filter(Boolean))]
+    const patch: Record<string, unknown> = {
+      enabled: input.enabled,
+      clientId: input.clientId.trim(),
+      userAgent: input.userAgent.trim(),
+      subreddits: list(input.subreddits, /^\/?r\//i),
+      keywords: list(input.keywords, /^$/),
+      limit,
+    }
+    // Empty secret keeps the saved one.
+    if (input.clientSecret) patch.clientSecret = input.clientSecret.trim()
+    await saveSettings("reddit", patch)
+    revalidatePath("/settings")
+  }, "Reddit settings saved")
+}
+
+export async function clearRedditSecretAction() {
+  return run(async () => {
+    await saveSettings("reddit", { clientSecret: "" })
+    revalidatePath("/settings")
+  }, "Reddit secret removed")
+}
+
+export async function fetchRedditAction() {
+  return run(async () => {
+    const s = (await getSettings()).reddit
+    if (!s.enabled) throw new Error("Enable Reddit and save the settings first.")
+    if (!s.clientId || !s.clientSecret || !s.userAgent) throw new Error("Add a client id, secret and user agent first.")
+    return enqueue("fetch_reddit")
+  }, "Reddit fetch queued")
 }
 
 export async function saveSyncSettingsAction(input: { cron: string; reviewsPerApp: number }) {
@@ -195,7 +322,7 @@ export async function groupLabelsAction() {
 export async function generateSpecAction(id: number) {
   return run(async () => {
     const s = await getSettings()
-    if (!s.ai.baseUrl || !s.ai.model) throw new Error("Add an AI provider in Settings first.")
+    if (!aiConfigured(s)) throw new Error("Add an AI provider in Settings first.")
     return enqueue("generate_spec", { opportunityId: id })
   }, "Spec generation queued")
 }
@@ -272,4 +399,45 @@ export async function setAppOwnAction(appId: string, own: boolean) {
     },
     own ? "Marked as your app" : "No longer marked as your app",
   )
+}
+
+/* ------------------------------------------------------------ review + validation */
+
+export async function recordVerdictAction(input: {
+  source: VerdictSource
+  ref: string
+  verdict: "correct" | "wrong"
+  corrected?: VerdictCorrection | null
+  notes?: string | null
+}) {
+  return run(async () => {
+    await recordVerdict(input)
+    revalidatePath("/review")
+  }, "Verdict saved")
+}
+
+export async function deleteVerdictAction(source: VerdictSource, ref: string) {
+  return run(async () => {
+    await deleteVerdict(source, ref)
+    revalidatePath("/review")
+  }, "Verdict removed")
+}
+
+export async function generateValidationAction(id: number) {
+  return run(async () => {
+    const s = await getSettings()
+    if (!aiConfigured(s)) throw new Error("Add an AI provider in Settings first.")
+    return enqueue("generate_validation", { opportunityId: id })
+  }, "Validation kit queued")
+}
+
+export async function saveValidationMetricsAction(
+  id: number,
+  m: { waitlist: number; price_clicks: number; replies: number; started_at: string | null },
+) {
+  return run(async () => {
+    await saveValidationMetrics(id, m)
+    revalidatePath(`/opportunities/${id}`)
+    revalidatePath("/opportunities")
+  }, "Metrics saved")
 }

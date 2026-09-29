@@ -252,7 +252,7 @@ if (!opps) {
     const rows = picked.map((p, i) => ({ ...p, label: labels[i % 2] }))
     await sql`
       update reviews r set label = v.label, label_kind = 'complaint', evidence_span = left(r.body, 120),
-        wtp_signal = case when v.i % 3 = 0 then 'churned' else 'none' end, pain_score = 4, analysed_at = coalesce(r.analysed_at, now())
+        wtp_signal = case when v.i % 3 = 0 then 'churned' else 'none' end, pain_score = 4, analysed_at = coalesce(r.analysed_at, now()), analysis_version = 2
       from unnest(${rows.map((r) => r.app_id)}::uuid[], ${rows.map((r) => r.review_id)}::text[], ${rows.map((r) => r.label)}::text[],
         ${rows.map((_, i) => i)}::int[]) as v(app_id, review_id, label, i)
       where r.app_id = v.app_id and r.review_id = v.review_id`

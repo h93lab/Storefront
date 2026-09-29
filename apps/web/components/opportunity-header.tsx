@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { GitMerge, MoreHorizontal, Pencil, Skull } from "lucide-react"
 import { toast } from "sonner"
@@ -28,7 +29,21 @@ export interface HeaderOpportunity {
   revisit_after: string | null
 }
 
-export function OpportunityHeader({ opp, mergeTargets }: { opp: HeaderOpportunity; mergeTargets: { id: number; label: string }[] }) {
+export interface SimilarChip {
+  id: number
+  label: string
+  status: string
+}
+
+export function OpportunityHeader({
+  opp,
+  mergeTargets,
+  similar = [],
+}: {
+  opp: HeaderOpportunity
+  mergeTargets: { id: number; label: string }[]
+  similar?: SimilarChip[]
+}) {
   const router = useRouter()
   const [pending, start] = React.useTransition()
   const [editing, setEditing] = React.useState(false)
@@ -69,6 +84,24 @@ export function OpportunityHeader({ opp, mergeTargets }: { opp: HeaderOpportunit
             </span>
           )}
         </div>
+        {similar.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="mr-1 text-xs text-muted-foreground">Similar opportunities</span>
+            {similar.map((s) => (
+              <Badge
+                key={s.id}
+                variant={s.status === "killed" ? "secondary" : "outline"}
+                className={s.status === "killed" ? "bg-destructive/15 text-destructive" : undefined}
+                asChild
+              >
+                <Link href={`/opportunities/${s.id}`} title={s.status === "killed" ? "Previously killed" : undefined}>
+                  {s.label}
+                  {s.status === "killed" && <span className="opacity-70">killed</span>}
+                </Link>
+              </Badge>
+            ))}
+          </div>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Select

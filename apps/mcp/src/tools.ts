@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import {
+  accuracyStats,
   addApp,
   addBoardItem,
   compareApps,
@@ -23,6 +24,11 @@ import {
   OPPORTUNITY_STATUSES,
   parseStoreUrl,
   recordOutcome,
+  recordVerdict,
+  reviewQueue,
+  saveValidationMetrics,
+  similarOpportunities,
+  validationDecision,
   resolveMediaPath,
   saveGate,
   saveSpec,
@@ -647,6 +653,114 @@ export function buildServer() {
         return fail((e as Error).message)
       }
     },
+  )
+
+  server.registerTool(
+    "record_verdict",
+    {
+      title: "Record label verdict",
+      description:
+        "Record whether the model's classification of one review or imported item was right. source 'review' uses ref '<app_id>:<review_id>' " +
+        "and source 'item' uses the item id, both as given by get_review_queue. verdict is 'correct' or 'wrong'; for 'wrong', pass corrected " +
+        "with any of wtp_signal, label_kind (complaint|request|praise|other), pain_score (1-5) and label. Verdicts feed get_accuracy.",
+      inputSchema: {
+        source: z.enum(["review", "item"]),
+        ref: z.string().min(1).max(200),
+        verdict: z.enum(["correct", "wrong"]),
+        corrected: z
+          .object({
+            wtp_signal: z.enum(WTP_SIGNALS).optional(),
+            label_kind: z.enum(["complaint", "request", "praise", "other"]).optional(),
+            pain_score: z.number().int().min(1).max(5).optional(),
+            label: z.string().min(1).max(200).optional(),
+          })
+          .optional(),
+        notes: z.string().max(2000).optional(),
+      },
+    },
+    async ({ source, ref, verdict, corrected, notes }) => attempt(() => recordVerdict({ source, ref, verdict, corrected, notes })),
+  )
+
+  server.registerTool(
+    "get_accuracy",
+    {
+      title: "Get label accuracy",
+      description: "Accuracy of the model's review labels measured from recorded verdicts: overall and per willingness-to-pay signal.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () => attempt(() => accuracyStats()),
+  )
+
+  server.registerTool(
+    "get_review_queue",
+    {
+      title: "Get review queue",
+      description:
+        "Classified reviews and items that have no verdict yet, with the model's label, kind, signal and pain, for checking with record_verdict. " +
+        "Each row has source and ref.",
+      inputSchema: {
+        limit: z.number().int().min(1).max(100).optional().describe("Default 20"),
+        only_signals: z.boolean().optional().describe("Only rows with a willingness-to-pay signal"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ limit, only_signals }) => attempt(() => reviewQueue({ limit, onlySignals: only_signals })),
+  )
+
+  server.registerTool(
+    "get_validation",
+    {
+      title: "Get validation",
+      description:
+        "The fake-door validation kit (headline, bullets, cta, price, thread reply, waitlist copy; null until generated in the web app), " +
+        "the recorded metrics and the decision. Decision rule: 'proceed' when waitlist >= 20 or price_clicks >= 5 or replies >= 3; " +
+        "'kill' when none of those and started_at is at least 5 days ago; otherwise 'pending'.",
+      inputSchema: { opportunity_id: oppId },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ opportunity_id }) => {
+      const o = await getOpportunity(opportunity_id)
+      if (!o) return notFound(opportunity_id)
+      return json({
+        opportunity_id: o.id,
+        kit: o.validation,
+        metrics: o.validation_metrics,
+        decision: validationDecision(o.validation_metrics),
+        url: oppLink(o.id),
+      })
+    },
+  )
+
+  server.registerTool(
+    "save_validation_metrics",
+    {
+      title: "Save validation metrics",
+      description:
+        "Save the results of a fake-door test, replacing earlier metrics. Omitted counts are stored as 0. Returns the decision: " +
+        "'proceed' when waitlist >= 20 or price_clicks >= 5 or replies >= 3; 'kill' when none of those and started_at is at least 5 days ago; else 'pending'.",
+      inputSchema: {
+        opportunity_id: oppId,
+        waitlist: z.number().int().min(0).optional().describe("Waitlist sign-ups"),
+        price_clicks: z.number().int().min(0).optional().describe("Clicks on the price / trial button"),
+        replies: z.number().int().min(0).optional().describe("Positive replies to the thread post"),
+        started_at: z.string().optional().describe("ISO date the test went live"),
+      },
+    },
+    async ({ opportunity_id, waitlist, price_clicks, replies, started_at }) =>
+      attempt(() => saveValidationMetrics(opportunity_id, { waitlist, price_clicks, replies, started_at })),
+  )
+
+  server.registerTool(
+    "similar_opportunities",
+    {
+      title: "Similar opportunities",
+      description:
+        "Opportunities whose evidence is semantically close to this one (embeddings). Returns [] when embeddings are not configured.",
+      inputSchema: { opportunity_id: oppId },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ opportunity_id }) => attempt(() => similarOpportunities(opportunity_id)),
   )
 
   return server

@@ -9,6 +9,10 @@ pnpm monorepo (Node 22, pnpm 10). Personal, self-hosted app-store reference libr
 - Postgres access uses `postgres` (porsager) with `prepare: false` for the Supabase transaction pooler. Cast `numeric`/`bigint` to `float8`/`int` in queries that return them.
 - Opportunities live in `packages/core/src/opportunities.ts`: evidence is reviews ∪ items, grouped by `opportunity_labels` on `lower(trim(label))`. The score is computed in SQL (`statsSelect`) and mirrored by `opportunityScore()`; change both together.
 - Never call the model from `apps/mcp`. LLM work (analysis, `group_labels`, `generate_spec`, `analyse_items`) runs as worker jobs; MCP tools only enqueue.
+- Model calls go through the provider dispatch in `packages/core/src/ai.ts`: use `chat()` and `embed()`, never the OpenAI path directly (`provider` may be `anthropic`).
+- Batch classification is asynchronous: `submitClassificationBatch` writes `ai_batches`, and `pollBatches` (worker, every 60 s) applies results. Do not summarise or group before the results land; `pollBatches` queues those steps itself.
+- pgvector objects (`label_embeddings`, `opportunities.centroid`) are optional and guarded. Check `to_regclass('label_embeddings')` before touching them and keep every feature working without them.
+- Score weights come from Settings (`settings.score`). Change the formula in both `opportunityScore()` and `statsSelect`, and keep them fed from the same weights.
 - Google Play apps are one row per `store_id` (reviews are not per country); iOS may be tracked per country. Count listings per `(store, store_id)`, never per app row.
 
 Checks before pushing: `pnpm format:check && pnpm typecheck && TEST_DATABASE_URL=… pnpm test && pnpm build`.

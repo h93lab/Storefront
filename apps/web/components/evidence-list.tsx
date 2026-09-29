@@ -11,7 +11,7 @@ import type { Evidence } from "@lens/core"
 
 export type EvidenceRow = Omit<Evidence, "date"> & { date: string | null }
 
-function Highlighted({ text, span }: { text: string; span: string | null }) {
+export function Highlighted({ text, span }: { text: string; span: string | null }) {
   const needle = span?.trim()
   const at = needle ? text.toLowerCase().indexOf(needle.toLowerCase()) : -1
   if (!needle || at < 0) return <>{text}</>

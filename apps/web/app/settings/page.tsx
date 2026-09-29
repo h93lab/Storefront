@@ -5,7 +5,7 @@ import { env, getSettings, mediaUsageBytes } from "@lens/core"
 import { CopyButton } from "@/components/copy-button"
 import { DiagnosticsPanel } from "@/components/diagnostics-panel"
 import { PageHeader } from "@/components/page-header"
-import { AiSettingsForm, SyncSettingsForm } from "@/components/settings-forms"
+import { AiSettingsForm, EmbeddingSettingsForm, RedditSettingsForm, ScoreSettingsForm, SyncSettingsForm } from "@/components/settings-forms"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -39,6 +39,12 @@ const TOOLS = [
   "set_opportunity_status",
   "record_outcome",
   "import_items",
+  "record_verdict",
+  "get_accuracy",
+  "get_review_queue",
+  "get_validation",
+  "save_validation_metrics",
+  "similar_opportunities",
 ]
 
 export default async function SettingsPage() {
@@ -61,6 +67,11 @@ export default async function SettingsPage() {
   }
   const key = settings.ai.apiKey
   const keyHint = key ? `…${key.slice(-4)}` : null
+  const embKey = settings.ai.embedding.apiKey
+  const embKeyHint = embKey ? `…${embKey.slice(-4)}` : null
+  const rdSecret = settings.reddit.clientSecret
+  const rdSecretHint = rdSecret ? `…${rdSecret.slice(-4)}` : null
+  const { clientSecret: _s, apiBase: _a, ...redditInitial } = settings.reddit
   const mcpUrl = process.env.PUBLIC_MCP_URL ?? "http://localhost:3001/mcp"
   const token = process.env.MCP_TOKEN ?? ""
   const tokenShown = token ? `${token.slice(0, 4)}${"•".repeat(12)}${token.slice(-4)}` : "Not set"
@@ -88,11 +99,51 @@ export default async function SettingsPage() {
       <Card>
         <CardHeader>
           <CardTitle>AI provider</CardTitle>
-          <CardDescription>Any OpenAI-compatible endpoint: OpenRouter, OpenAI, Ollama, vLLM, LM Studio and others.</CardDescription>
+          <CardDescription>
+            Anthropic, or any OpenAI-compatible endpoint: OpenRouter, OpenAI, Ollama, vLLM, LM Studio and others.
+          </CardDescription>
         </CardHeader>
         <AiSettingsForm
-          initial={{ baseUrl: settings.ai.baseUrl, model: settings.ai.model, autoAnalyse: settings.ai.autoAnalyse, keyHint }}
+          initial={{
+            provider: settings.ai.provider,
+            baseUrl: settings.ai.baseUrl,
+            model: settings.ai.model,
+            autoAnalyse: settings.ai.autoAnalyse,
+            batch: settings.ai.batch,
+            keyHint,
+          }}
         />
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Embeddings</CardTitle>
+          <CardDescription>Optional. Lets grouping match labels to existing opportunities and shows similar ones.</CardDescription>
+        </CardHeader>
+        <EmbeddingSettingsForm
+          initial={{
+            baseUrl: settings.ai.embedding.baseUrl,
+            model: settings.ai.embedding.model,
+            dimensions: settings.ai.embedding.dimensions,
+            keyHint: embKeyHint,
+          }}
+        />
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Scoring</CardTitle>
+          <CardDescription>How opportunities are ranked. Changes apply to every list and page immediately.</CardDescription>
+        </CardHeader>
+        <ScoreSettingsForm initial={settings.score} />
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Reddit</CardTitle>
+          <CardDescription>Optional extra evidence: public posts from the subreddits you choose that match your keywords.</CardDescription>
+        </CardHeader>
+        <RedditSettingsForm initial={redditInitial} secretHint={rdSecretHint} />
       </Card>
 
       <Card>

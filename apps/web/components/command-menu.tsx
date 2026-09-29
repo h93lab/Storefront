@@ -11,6 +11,7 @@ import {
   LayoutDashboard,
   Lightbulb,
   Library,
+  ListChecks,
   Moon,
   RefreshCw,
   Search,
@@ -40,7 +41,7 @@ export interface CommandApp {
   icon: string | null
 }
 
-export function CommandMenu({ apps }: { apps: CommandApp[] }) {
+export function CommandMenu({ apps, reviewCount }: { apps: CommandApp[]; reviewCount: number }) {
   const [open, setOpen] = React.useState(false)
   const router = useRouter()
   const { resolvedTheme, setTheme } = useTheme()
@@ -97,6 +98,7 @@ export function CommandMenu({ apps }: { apps: CommandApp[] }) {
               ["/boards", "Boards", Bookmark],
               ["/opportunities", "Opportunities", Lightbulb],
               ["/import", "Import", ClipboardPaste],
+              ["/review", "Review", ListChecks],
               ["/compare", "Compare", GitCompare],
               ["/changes", "Changes", History],
               ["/settings", "Settings", Settings],
@@ -106,6 +108,7 @@ export function CommandMenu({ apps }: { apps: CommandApp[] }) {
                 <CommandItem key={href as string} onSelect={() => go(() => router.push(href as string))}>
                   <I />
                   {label as string}
+                  {href === "/review" && <CommandShortcut>{reviewCount}</CommandShortcut>}
                 </CommandItem>
               )
             })}

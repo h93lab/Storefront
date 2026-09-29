@@ -438,6 +438,7 @@ export interface OpportunityStats {
   outcome: { installs: number; trial_starts: number; paying: number; notes: string; recorded_at: string } | null
   killed_reason: string | null
   revisit_after: Date | null
+  validation_metrics: ValidationMetrics | null
   created_at: Date
   updated_at: Date
   n: number
@@ -516,7 +517,7 @@ function statsSelect(sql: Sql, o: OpportunityQuery & { id?: number; requireEvide
       from agg
     )
     select o.id::int as id, o.label, o.kind, o.status, o.notes, o.gate, (o.spec_md is not null) as has_spec, o.spec_generated_at,
-      o.outcome, o.killed_reason, o.revisit_after, o.created_at, o.updated_at,
+      o.outcome, o.killed_reason, o.revisit_after, o.validation_metrics, o.created_at, o.updated_at,
       coalesce(s.n, 0)::int as n, coalesce(s.listings, 0)::int as listings, coalesce(s.apps, 0)::int as apps,
       coalesce(s.avg_pain, 0)::float8 as avg_pain, coalesce(s.neg_share, 0)::float8 as neg_share,
       json_build_object('paying_competitor', coalesce(s.paying_competitor, 0), 'churned', coalesce(s.churned, 0),

@@ -7,7 +7,7 @@ export default function NotFound() {
     <Empty className="border">
       <EmptyHeader>
         <EmptyTitle>Page not found</EmptyTitle>
-        <EmptyDescription>This app or board may have been removed.</EmptyDescription>
+        <EmptyDescription>This page may have been removed.</EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
         <Button asChild>

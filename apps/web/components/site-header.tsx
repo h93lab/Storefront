@@ -17,12 +17,13 @@ const TITLES: [string, string][] = [
   ["/opportunities/", "Opportunity"],
   ["/opportunities", "Opportunities"],
   ["/import", "Import"],
+  ["/review", "Review"],
   ["/compare", "Compare"],
   ["/changes", "Changes"],
   ["/settings", "Settings"],
 ]
 
-export function SiteHeader({ apps }: { apps: CommandApp[] }) {
+export function SiteHeader({ apps, reviewCount }: { apps: CommandApp[]; reviewCount: number }) {
   const pathname = usePathname()
   const title = pathname === "/" ? "Dashboard" : (TITLES.find(([p]) => pathname.startsWith(p))?.[1] ?? "")
   // Detail pages get a back link to their list instead of a generic label.
@@ -49,7 +50,7 @@ export function SiteHeader({ apps }: { apps: CommandApp[] }) {
         <span className="truncate text-sm font-medium">{title}</span>
       )}
       <div className="ml-auto flex items-center gap-2">
-        <CommandMenu apps={apps} />
+        <CommandMenu apps={apps} reviewCount={reviewCount} />
         <ThemeToggle />
         <AddAppDialog />
       </div>

@@ -29,6 +29,7 @@ export function OpportunityTabs({ tab, evidenceCount, children }: { tab: string;
           </TabsTrigger>
           <TabsTrigger value="gate">Gate</TabsTrigger>
           <TabsTrigger value="spec">Spec</TabsTrigger>
+          <TabsTrigger value="validation">Validation</TabsTrigger>
           <TabsTrigger value="outcome">Outcome</TabsTrigger>
         </TabsList>
       </Tabs>

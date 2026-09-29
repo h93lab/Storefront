@@ -16,7 +16,7 @@ assert(bad.status === 401, "rejects requests without a token")
 const client = new Client({ name: "smoke", version: "1" })
 await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }))
 const { tools } = await client.listTools()
-assert(tools.length === 23, `lists ${tools.length} tools`)
+assert(tools.length === 29, `lists ${tools.length} tools`)
 const call = async (name, args = {}) => {
   const r = await client.callTool({ name, arguments: args })
   let data = null
@@ -93,6 +93,24 @@ assert(
     after.gate?.checks?.scope === true,
   "get_opportunity reflects the saved state",
 )
+const { data: queue } = await call("get_review_queue", { limit: 5 })
+assert(Array.isArray(queue), `get_review_queue returns ${queue?.length} rows`)
+if (queue.length) {
+  const { data: vd } = await call("record_verdict", { source: queue[0].source, ref: queue[0].ref, verdict: "correct" })
+  assert(vd?.verdict === "correct", "record_verdict records a verdict")
+  const { data: acc } = await call("get_accuracy")
+  assert(acc.total >= 1, `get_accuracy total ${acc.total}`)
+  const { r: badVerdict } = await call("record_verdict", { source: queue[0].source, ref: queue[0].ref, verdict: "maybe" })
+  assert(badVerdict.isError, "record_verdict rejects an invalid verdict")
+} else console.log("skip - no review queue rows")
+const { data: val0 } = await call("get_validation", { opportunity_id: oid })
+assert(["pending", "proceed", "kill"].includes(val0.decision), `get_validation decision ${val0.decision}`)
+const { data: vm } = await call("save_validation_metrics", { opportunity_id: oid, waitlist: 25 })
+assert(vm.decision === "proceed", "save_validation_metrics returns proceed at 25 sign-ups")
+const { data: val1 } = await call("get_validation", { opportunity_id: oid })
+assert(val1.decision === "proceed" && val1.metrics.waitlist === 25, "get_validation reflects saved metrics")
+const { data: sim } = await call("similar_opportunities", { opportunity_id: oid })
+assert(Array.isArray(sim), "similar_opportunities returns an array")
 const { r: noOpp } = await call("get_opportunity", { opportunity_id: 999999 })
 assert(noOpp.isError, "unknown opportunity returns a tool error")
 await client.close()
