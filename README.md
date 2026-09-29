@@ -341,7 +341,7 @@ Requires Node 22 and pnpm 10.
 
 ```bash
 pnpm install
-docker run -d --name lens-pg -e POSTGRES_PASSWORD=lens -e POSTGRES_DB=lens -p 5433:5432 postgres:16-alpine
+docker run -d --name lens-pg -e POSTGRES_PASSWORD=lens -e POSTGRES_DB=lens -p 5433:5432 pgvector/pgvector:pg16
 export DATABASE_URL=postgres://postgres:lens@localhost:5433/lens MEDIA_DIR=./data/media MCP_TOKEN=dev-token-0123456789abcdefgh
 pnpm migrate && pnpm seed
 pnpm dev:web      # http://localhost:3000
