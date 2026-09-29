@@ -35,6 +35,21 @@ const fetchImage = (u: string) => {
 
 let aiServer: http.Server
 let aiUrl = ""
+let aiHits = 0
+let embedServer: http.Server
+let embedUrl = ""
+
+/** Deterministic 1024-dim vector; texts equal after dropping case and punctuation get the same vector. */
+function fakeVector(text: string) {
+  let h = 2166136261
+  for (const ch of text.toLowerCase().replace(/[^a-z0-9]/g, "")) h = Math.imul(h ^ ch.charCodeAt(0), 16777619)
+  const v: number[] = []
+  for (let i = 0; i < 1024; i++) {
+    h = (Math.imul(h ^ (h >>> 15), 2246822507) + i) | 0
+    v.push(((h >>> 0) % 2000) / 1000 - 1)
+  }
+  return v
+}
 
 suite("pipeline", () => {
   let core: typeof import("../src/index")
@@ -50,6 +65,7 @@ suite("pipeline", () => {
 
     // Fake OpenAI-compatible provider: classifies by rating, clusters by echoing.
     aiServer = http.createServer(async (req, res) => {
+      aiHits++
       let body = ""
       for await (const c of req) body += c
       const msgs = JSON.parse(body).messages as { role: string; content: string }[]
@@ -104,10 +120,22 @@ suite("pipeline", () => {
     })
     await new Promise<void>((r) => aiServer.listen(0, r))
     aiUrl = `http://127.0.0.1:${(aiServer.address() as { port: number }).port}/v1`
+
+    // Fake OpenAI-shaped embeddings endpoint.
+    embedServer = http.createServer(async (req, res) => {
+      let body = ""
+      for await (const c of req) body += c
+      const input = JSON.parse(body).input as string[]
+      res.setHeader("content-type", "application/json")
+      res.end(JSON.stringify({ data: input.map((t, index) => ({ index, embedding: fakeVector(t) })) }))
+    })
+    await new Promise<void>((r) => embedServer.listen(0, r))
+    embedUrl = `http://127.0.0.1:${(embedServer.address() as { port: number }).port}/v1`
   })
 
   afterAll(async () => {
     aiServer?.close()
+    embedServer?.close()
     if (core) await core.closeDb()
   })
 
@@ -481,6 +509,190 @@ suite("pipeline", () => {
       "paywall before trying content",
     ])
     await expect(core.mergeOpportunities(paywall.id, paywall.id)).rejects.toThrow(/itself/)
+  })
+
+  it("takes the score weights from settings", async () => {
+    const [b] = await core.db()<{ id: string }[]>`
+      insert into apps (store, store_id, country, lang, name) values ('ios', '999', 'us', 'en', 'Other') returning id`
+    await core.db()`
+      insert into reviews (app_id, review_id, rating, body, label, label_kind, reviewed_at, wtp_signal, pain_score, analysed_at, analysis_version)
+      values (${b.id}, 'w1', 1, 'no free trial', 'Paywall before trying content', 'complaint', now(), 'none', 2, now(), ${core.ANALYSIS_VERSION})`
+    const find = async () => (await core.listOpportunities()).find((o) => o.label === "Free sample — before paywall")!
+    const base = await find()
+    expect(base.listings).toBe(2)
+    const wtpShare = Object.values(base.signals).reduce((a, n) => a + n, 0) / base.n
+    const expected = (w: object) =>
+      core.opportunityScore({ recent: base.recent, listings: base.listings, avgPain: base.avg_pain, wtpShare }, w)
+    expect(base.score).toBeCloseTo(expected({}), 6)
+
+    await core.saveSettings("score", { listingWeight: 0 })
+    const flat = await find()
+    expect(flat.score).toBeLessThan(base.score)
+    expect(flat.score).toBeCloseTo(base.score / 1.5, 6) // 1 + 0.5 * (2 - 1)
+    expect(flat.score).toBeCloseTo(expected({ listingWeight: 0 }), 6)
+    expect((await core.getOpportunity(base.id))!.score).toBeCloseTo(flat.score, 6)
+
+    await core.saveSettings("score", { listingWeight: 0.5, painWeight: 3, wtpWeight: 0 })
+    expect((await find()).score).toBeCloseTo(expected({ painWeight: 3, wtpWeight: 0 }), 6)
+    // a longer half-life keeps old evidence alive
+    await core.saveSettings("score", { painWeight: 1, wtpWeight: 2, halfLifeDays: 3650 })
+    expect((await find()).recent).toBeGreaterThan(base.recent)
+    await core.saveSettings("score", { halfLifeDays: 90 })
+    expect((await find()).score).toBeCloseTo(base.score, 6)
+    expect((await core.getSettings()).score).toEqual({
+      listingWeight: 0.5,
+      painWeight: 1,
+      wtpWeight: 2,
+      halfLifeDays: 90,
+      autoMapThreshold: 0.86,
+    })
+    await core.db()`delete from apps where id = ${b.id}`
+  })
+
+  it("records verdicts, writes corrections through and reports accuracy", async () => {
+    const r0 = `${appId}:r0`
+    const r2 = `${appId}:r2`
+    const [{ id: itemId }] = await core.db()<{ id: string }[]>`select id::text from items limit 1`
+    const refs = async (o: { onlySignals?: boolean } = {}) => (await core.reviewQueue({ limit: 100, ...o })).map((e) => e.ref)
+
+    expect(await refs({ onlySignals: true })).toEqual([r0]) // the only row with a signal
+    const all = await core.reviewQueue({ limit: 100 })
+    expect(all[0].ref).toBe(r0) // signals first
+    expect(all[0]).toMatchObject({ source: "review", wtp_signal: "churned", label_kind: "complaint" })
+    expect(all.map((e) => e.ref)).toContain(r2)
+    expect(await core.reviewQueue({ limit: 3 })).toHaveLength(3)
+
+    expect(await core.accuracyStats()).toMatchObject({
+      total: 0,
+      correct: 0,
+      wrong: 0,
+      accuracy: 0,
+      byVersion: [],
+      bySignal: [],
+      byKind: [],
+    })
+
+    const v = await core.recordVerdict({ source: "review", ref: r0, verdict: "correct" })
+    expect(v).toMatchObject({ source: "review", ref: r0, verdict: "correct", corrected: null, analysis_version: core.ANALYSIS_VERSION })
+    await core.recordVerdict({
+      source: "review",
+      ref: r2,
+      verdict: "wrong",
+      notes: "would actually pay",
+      corrected: { wtp_signal: "stated_wtp", pain_score: 5, label_kind: "request", label: "Free sample — before paywall." },
+    })
+    await core.recordVerdict({ source: "item", ref: itemId, verdict: "correct" })
+
+    expect(await refs()).not.toContain(r0)
+    expect(await refs()).not.toContain(r2)
+    expect(await refs({ onlySignals: true })).toEqual([]) // r2 now has a signal but a verdict too
+    const fixed = await core.getReview(appId, "r2")
+    expect(fixed).toMatchObject({ wtp_signal: "stated_wtp", pain_score: 5, label_kind: "request", label: "Free sample — before paywall" })
+    expect((await core.searchEvidence({ signal: "stated_wtp" })).rows.map((e) => e.ref)).toEqual([r2])
+
+    // recording again replaces the verdict instead of adding one
+    await core.recordVerdict({ source: "review", ref: r0, verdict: "wrong" })
+    await core.recordVerdict({ source: "review", ref: r0, verdict: "correct" })
+    const stats = await core.accuracyStats()
+    expect(stats).toMatchObject({ total: 3, correct: 2, wrong: 1 })
+    expect(stats.accuracy).toBeCloseTo(2 / 3, 10)
+    expect(stats.byVersion).toEqual([{ version: core.ANALYSIS_VERSION, total: 3, correct: 2 }])
+    // bucketed by what the model said, so r2's correction does not move it out of "none"
+    expect(stats.bySignal).toEqual([
+      { signal: "none", total: 2, correct: 1 },
+      { signal: "churned", total: 1, correct: 1 },
+    ])
+    expect(stats.byKind.reduce((a, k) => a + k.total, 0)).toBe(3)
+
+    expect(await core.deleteVerdict("item", itemId)).toBe(true)
+    expect(await core.deleteVerdict("item", itemId)).toBe(false)
+    expect((await core.accuracyStats()).total).toBe(2)
+    expect(await refs()).toContain(itemId)
+
+    await expect(core.recordVerdict({ source: "review", ref: `${appId}:nope`, verdict: "correct" })).rejects.toThrow(/not found/)
+    await expect(core.recordVerdict({ source: "review", ref: "garbage", verdict: "correct" })).rejects.toThrow(/Invalid review ref/)
+    await expect(core.recordVerdict({ source: "item", ref: "x", verdict: "correct" })).rejects.toThrow(/Invalid item ref/)
+    await expect(core.recordVerdict({ source: "item", ref: itemId, verdict: "maybe" as never })).rejects.toThrow(/correct or wrong/)
+    await expect(
+      core.recordVerdict({ source: "item", ref: itemId, verdict: "wrong", corrected: { wtp_signal: "bogus" as never } }),
+    ).rejects.toThrow(/Invalid wtp_signal/)
+    await core.db()`delete from review_verdicts`
+    // put r2 back as the classifier had it, for the tests that follow
+    await core.db()`update reviews set wtp_signal = 'none', pain_score = 4, label = 'Paywall before trying content', label_kind = 'complaint'
+      where app_id = ${appId} and review_id = 'r2'`
+  })
+
+  it("embeds labels, maps near-duplicates onto killed opportunities without the model, and finds similar ones", async () => {
+    const sql = core.db()
+    expect(await core.embedLabels()).toEqual({ embedded: 0 }) // not configured: silently nothing
+    expect(await core.recomputeCentroids()).toBe(0)
+    expect(await core.similarOpportunities(1)).toEqual([])
+    const [{ vector }] = await sql<{ vector: boolean }[]>`select to_regclass('label_embeddings') is not null as vector`
+    expect(vector).toBe(true) // pgvector is installed on the test database
+
+    await core.saveSettings("ai", { embedding: { baseUrl: embedUrl, apiKey: "", model: "fake-embed", dimensions: 1024 } })
+    expect(core.embeddingConfigured(await core.getSettings())).toBe(true)
+    const labelCount = (await sql<{ n: number }[]>`select count(*)::int as n from opportunity_labels`)[0].n
+    expect(await core.embedLabels()).toEqual({ embedded: labelCount })
+    expect((await sql<{ n: number }[]>`select count(*)::int as n from label_embeddings`)[0].n).toBe(labelCount)
+    expect(await core.embedLabels()).toEqual({ embedded: 0 })
+
+    const opps = await core.listOpportunities({ status: "all" })
+    expect(await core.recomputeCentroids()).toBe(opps.length)
+    const [{ n: distant }] = await sql<{ n: number }[]>`
+      select count(*)::int as n from opportunities o
+      where o.centroid is null or o.centroid <=> (
+        select avg(e.v) from label_embeddings e join opportunity_labels ol on ol.label = e.label where ol.opportunity_id = o.id) > 1e-6`
+    expect(distant).toBe(0)
+
+    const offline = opps.find((o) => o.label === "offline mode — sleep stories")!
+    const paywall = opps.find((o) => o.label === "Free sample — before paywall")!
+    await core.setOpportunityStatus(offline.id, "killed", { reason: "too niche" })
+
+    // same words, different punctuation: an identical vector, so it maps onto the killed opportunity with no chat call
+    await sql`
+      insert into reviews (app_id, review_id, rating, body, label, label_kind, reviewed_at, analysed_at, analysis_version)
+      values (${appId}, 'e1', 2, 'x', 'Offline mode - sleep stories!!', 'request', now(), now(), ${core.ANALYSIS_VERSION})`
+    const hits = aiHits
+    expect(await core.groupLabels()).toEqual({ mapped: 1, created: 0 })
+    expect(aiHits).toBe(hits)
+    expect(
+      (
+        await sql<{ opportunity_id: number }[]>`
+      select opportunity_id::int from opportunity_labels where label = 'offline mode - sleep stories!!'`
+      )[0].opportunity_id,
+    ).toBe(offline.id)
+    expect((await core.listOpportunities()).map((o) => o.id)).not.toContain(offline.id) // still killed and hidden
+
+    // a label that resembles nothing goes to the model, and both opportunities get fresh centroids
+    await sql`
+      insert into reviews (app_id, review_id, rating, body, label, label_kind, reviewed_at, analysed_at, analysis_version)
+      values (${appId}, 'e2', 2, 'x', 'Dark mode — night reading', 'request', now(), now(), ${core.ANALYSIS_VERSION})`
+    expect(await core.groupLabels()).toEqual({ mapped: 0, created: 1 })
+    expect(aiHits).toBeGreaterThan(hits)
+    const dark = (await core.listOpportunities({ status: "all" })).find((o) => o.label === "dark mode — night reading")!
+    expect((await sql<{ has: boolean }[]>`select centroid is not null as has from opportunities where id = ${dark.id}`)[0].has).toBe(true)
+
+    const similar = await core.similarOpportunities(paywall.id)
+    expect(similar.map((s) => s.id).sort()).toEqual([offline.id, dark.id].sort())
+    expect(similar.find((s) => s.id === offline.id)).toMatchObject({ status: "killed", label: "offline mode — sleep stories" })
+    expect(similar[0].similarity).toBeGreaterThanOrEqual(similar[1].similarity)
+    expect(await core.similarOpportunities(paywall.id, 1)).toHaveLength(1)
+    // the killed opportunity's nearest neighbour is not itself
+    expect((await core.similarOpportunities(offline.id)).map((s) => s.id)).not.toContain(offline.id)
+
+    // a merge refreshes the surviving centroid
+    await core.mergeOpportunities(dark.id, paywall.id)
+    const [{ close }] = await sql<{ close: boolean }[]>`
+      select o.centroid <=> (select avg(e.v) from label_embeddings e join opportunity_labels ol on ol.label = e.label
+        where ol.opportunity_id = o.id) < 1e-6 as close from opportunities o where o.id = ${paywall.id}`
+    expect(close).toBe(true)
+
+    await sql`delete from reviews where review_id in ('e1', 'e2')`
+    await core.saveSettings("ai", { embedding: { baseUrl: "", apiKey: "", model: "", dimensions: 1024 } })
+    expect(await core.similarOpportunities(paywall.id)).toEqual([]) // embeddings off
+    await core.setOpportunityStatus(offline.id, "surfaced")
+    await sql`delete from jobs`
   })
 
   it("refuses the same Google Play app in a second country", async () => {

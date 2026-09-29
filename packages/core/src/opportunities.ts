@@ -1,8 +1,8 @@
-import { chat, parseJsonReply } from "./ai"
-import { ANALYSIS_VERSION, classifyBatch, type PendingReview } from "./analysis"
+import { AiError, chat, embed, embeddingConfigured, parseJsonReply } from "./ai"
+import { ANALYSIS_VERSION, applyClassifications, classifyBatch, pendingItems, submitClassificationBatch, WTP_SIGNALS } from "./analysis"
 import { db, type Sql } from "./db"
 import { enqueue } from "./jobs"
-import { aiConfigured, getSettings } from "./settings"
+import { aiConfigured, DEFAULT_SETTINGS, getSettings, type Settings } from "./settings"
 import { mapLimit } from "./sync"
 
 export const OPPORTUNITY_STATUSES = ["surfaced", "validating", "building", "shipped", "killed"] as const
@@ -34,7 +34,7 @@ const oppId = (id: number | string) => {
 /* ------------------------------------------------------------------ scoring */
 
 export interface ScoreInput {
-  /** Recency-weighted evidence count (90-day half-life). */
+  /** Recency-weighted evidence count (half-life from `settings.score.halfLifeDays`, 90 by default). */
   recent: number
   /** Distinct (store, store_id) listings that carry evidence. */
   listings: number
@@ -43,9 +43,28 @@ export interface ScoreInput {
   wtpShare: number
 }
 
-/** Mirrors the SQL in `statsSelect`; kept here so the formula is testable without a database. */
-export function opportunityScore({ recent, listings, avgPain, wtpShare }: ScoreInput) {
-  return recent * (1 + 0.5 * (Math.max(listings, 1) - 1)) * (1 + avgPain / 5) * (1 + 2 * wtpShare)
+export type ScoreWeights = Settings["score"]
+
+/** Falls back to the defaults for anything that is not a usable number. */
+function weightsOf(w: Partial<ScoreWeights> = {}): ScoreWeights {
+  const d = DEFAULT_SETTINGS.score
+  const n = (v: unknown, fallback: number) => (typeof v === "number" && Number.isFinite(v) ? v : fallback)
+  return {
+    listingWeight: Math.max(0, n(w.listingWeight, d.listingWeight)),
+    painWeight: Math.max(0, n(w.painWeight, d.painWeight)),
+    wtpWeight: Math.max(0, n(w.wtpWeight, d.wtpWeight)),
+    halfLifeDays: Math.max(1, n(w.halfLifeDays, d.halfLifeDays)),
+    autoMapThreshold: Math.min(1, Math.max(0, n(w.autoMapThreshold, d.autoMapThreshold))),
+  }
+}
+
+/**
+ * Mirrors the SQL in `statsSelect`; kept here so the formula is testable without a database.
+ * `recent` is already recency-weighted, so the half-life is not needed here.
+ */
+export function opportunityScore({ recent, listings, avgPain, wtpShare }: ScoreInput, weights: Partial<ScoreWeights> = {}) {
+  const w = weightsOf(weights)
+  return recent * (1 + w.listingWeight * (Math.max(listings, 1) - 1)) * (1 + (w.painWeight * avgPain) / 5) * (1 + w.wtpWeight * wtpShare)
 }
 
 /* ----------------------------------------------------------------- grouping */
@@ -123,34 +142,183 @@ Rules:
 
 const GROUP_BATCH = 120
 
+/** Distinct lowercased complaint/request labels (reviews and items) that no opportunity owns yet. */
+const unmappedRel = (sql: Sql) => sql`
+  select l.label, sum(l.n)::int as count, (array_agg(l.kind order by l.n desc))[1] as kind
+  from (
+    select lower(trim(label)) as label, label_kind as kind, count(*) as n from reviews
+      where label is not null and trim(label) <> '' and label_kind in ('complaint', 'request') group by 1, 2
+    union all
+    select lower(trim(label)), label_kind, count(*) from items
+      where label is not null and trim(label) <> '' and label_kind in ('complaint', 'request') group by 1, 2
+  ) l
+  where not exists (select 1 from opportunity_labels ol where ol.label = l.label)
+  group by l.label`
+
+const unmappedLabels = (sql: Sql) => sql<UnmappedLabel[]>`select * from (${unmappedRel(sql)}) u order by count desc, label`
+
+/* --------------------------------------------------------------- embeddings */
+
+/** pgvector is optional: the migration only creates `label_embeddings` when the extension is available. */
+const vectorsAvailable = async (sql: Sql) => {
+  const [r] = await sql<{ ok: boolean }[]>`select to_regclass('label_embeddings') is not null as ok`
+  return r.ok
+}
+
+/** The column is `vector(1024)`; a provider must be asked for 1024 dimensions. */
+const VECTOR_DIMENSIONS = 1024
+const vectorText = (v: number[]) => {
+  if (v.length !== VECTOR_DIMENSIONS) {
+    throw new AiError(
+      `The embedding model returned ${v.length} dimensions but the database stores ${VECTOR_DIMENSIONS}. Set dimensions to ${VECTOR_DIMENSIONS} in Settings.`,
+    )
+  }
+  return `[${v.join(",")}]`
+}
+
 /**
- * Assigns every not-yet-mapped review/item label to an opportunity, asking the
- * model to match existing opportunities (killed ones included) or form new ones.
+ * Embeds every label of `opportunity_labels` and every not-yet-mapped label that
+ * has no vector from the current embedding model. Does nothing (returns 0) when
+ * embeddings are not configured or pgvector is not installed.
+ */
+export async function embedLabels(opts: { log?: (m: string) => void; signal?: AbortSignal } = {}): Promise<{ embedded: number }> {
+  const settings = await getSettings()
+  const sql = db()
+  if (!embeddingConfigured(settings) || !(await vectorsAvailable(sql))) return { embedded: 0 }
+  const cfg = settings.ai.embedding
+  const missing = await sql<{ label: string }[]>`
+    select label from (
+      select label from opportunity_labels
+      union
+      select label from (${unmappedRel(sql)}) u
+    ) l
+    where not exists (select 1 from label_embeddings e where e.label = l.label and e.model = ${cfg.model})
+    order by label`
+  let embedded = 0
+  for (let i = 0; i < missing.length; i += 200) {
+    opts.signal?.throwIfAborted()
+    const labels = missing.slice(i, i + 200).map((m) => m.label)
+    const vectors = (await embed(cfg, labels, { inputType: "document" })).map(vectorText)
+    await sql`
+      insert into label_embeddings (label, model, v)
+      select t.label, ${cfg.model}, t.v::vector from unnest(${labels}::text[], ${vectors}::text[]) as t(label, v)
+      on conflict (label) do update set model = excluded.model, v = excluded.v, created_at = now()`
+    embedded += labels.length
+    opts.log?.(`embedded ${embedded}/${missing.length} labels`)
+  }
+  return { embedded }
+}
+
+/**
+ * Sets `opportunities.centroid` to the mean vector of the opportunity's labels
+ * (all opportunities, or just `ids`). Returns how many centroids were written.
+ */
+export async function recomputeCentroids(ids?: number[]): Promise<number> {
+  const settings = await getSettings()
+  const sql = db()
+  if (!embeddingConfigured(settings) || !(await vectorsAvailable(sql))) return 0
+  const scope = ids ? [...new Set(ids.map(oppId))] : null
+  const rows = await sql`
+    update opportunities o set centroid = c.v
+    from (
+      select ol.opportunity_id as id, avg(e.v) as v
+      from opportunity_labels ol join label_embeddings e on e.label = ol.label and e.model = ${settings.ai.embedding.model}
+      where (${scope}::bigint[] is null or ol.opportunity_id = any(${scope}::bigint[]))
+      group by ol.opportunity_id
+    ) c
+    where o.id = c.id returning o.id`
+  return rows.length
+}
+
+export interface SimilarOpportunity {
+  id: number
+  label: string
+  status: OpportunityStatus
+  /** Cosine similarity of the centroids, 0..1 for typical embeddings. */
+  similarity: number
+}
+
+/** Other opportunities closest to this one by centroid (killed ones included, so "previously killed" shows up). Empty when embeddings are off. */
+export async function similarOpportunities(id: number | string, limit = 5): Promise<SimilarOpportunity[]> {
+  const n = oppId(id)
+  const sql = db()
+  if (!embeddingConfigured(await getSettings()) || !(await vectorsAvailable(sql))) return []
+  return sql<SimilarOpportunity[]>`
+    select o.id::int as id, o.label, o.status, (1 - (o.centroid <=> me.centroid))::float8 as similarity
+    from opportunities o, (select centroid from opportunities where id = ${n}) me
+    where o.id <> ${n} and o.centroid is not null and me.centroid is not null
+    order by o.centroid <=> me.centroid, o.id limit ${Math.min(50, Math.max(1, Math.round(limit)))}`
+}
+
+/**
+ * Maps labels whose vector is at least `threshold` similar to an opportunity
+ * centroid (killed opportunities included) onto that opportunity. Returns the
+ * labels handled and the opportunities touched.
+ */
+async function autoMapLabels(sql: Sql, labels: string[], model: string, threshold: number) {
+  if (!labels.length) return { mapped: new Set<string>(), touched: [] as number[] }
+  const hits = await sql<{ label: string; id: number }[]>`
+    select e.label, n.id
+    from label_embeddings e
+    cross join lateral (
+      select o.id::int as id, (1 - (e.v <=> o.centroid))::float8 as sim
+      from opportunities o where o.centroid is not null order by e.v <=> o.centroid limit 1
+    ) n
+    where e.label = any(${labels}::text[]) and e.model = ${model} and n.sim >= ${threshold}`
+  if (!hits.length) return { mapped: new Set<string>(), touched: [] as number[] }
+  await sql`
+    insert into opportunity_labels (label, opportunity_id)
+    select * from unnest(${hits.map((h) => h.label)}::text[], ${hits.map((h) => h.id)}::bigint[])
+    on conflict (label) do nothing`
+  const touched = [...new Set(hits.map((h) => h.id))]
+  await sql`update opportunities set updated_at = now() where id = any(${touched}::bigint[])`
+  return { mapped: new Set(hits.map((h) => h.label)), touched }
+}
+
+/**
+ * Assigns every not-yet-mapped review/item label to an opportunity. With
+ * embeddings configured, labels close to an existing opportunity's centroid
+ * (killed ones included) are mapped without the model; the rest go to the model,
+ * which matches existing opportunities or forms new ones.
  */
 export async function groupLabels(
   opts: { batchSize?: number; log?: (m: string) => void; onProgress?: (m: string) => void; signal?: AbortSignal } = {},
 ): Promise<{ mapped: number; created: number }> {
   const sql = db()
   const log = opts.log ?? (() => {})
-  const unmapped = await sql<UnmappedLabel[]>`
-    select l.label, sum(l.n)::int as count, (array_agg(l.kind order by l.n desc))[1] as kind
-    from (
-      select lower(trim(label)) as label, label_kind as kind, count(*) as n from reviews
-        where label is not null and trim(label) <> '' and label_kind in ('complaint', 'request') group by 1, 2
-      union all
-      select lower(trim(label)), label_kind, count(*) from items
-        where label is not null and trim(label) <> '' and label_kind in ('complaint', 'request') group by 1, 2
-    ) l
-    where not exists (select 1 from opportunity_labels ol where ol.label = l.label)
-    group by l.label order by count desc, l.label`
+  let unmapped: UnmappedLabel[] = await unmappedLabels(sql)
   if (!unmapped.length) return { mapped: 0, created: 0 }
 
   const settings = await getSettings()
-  if (!aiConfigured(settings)) throw new Error("AI provider is not configured. Add a base URL and model in Settings.")
-
-  const size = opts.batchSize ?? GROUP_BATCH
   let mapped = 0
   let created = 0
+  const touched = new Set<number>()
+
+  const useVectors = embeddingConfigured(settings) && (await vectorsAvailable(sql))
+  if (useVectors) {
+    try {
+      await embedLabels({ log, signal: opts.signal })
+      const auto = await autoMapLabels(
+        sql,
+        unmapped.map((u) => u.label),
+        settings.ai.embedding.model,
+        weightsOf(settings.score).autoMapThreshold,
+      )
+      if (auto.mapped.size) {
+        unmapped = unmapped.filter((u) => !auto.mapped.has(u.label))
+        mapped += auto.mapped.size
+        auto.touched.forEach((id) => touched.add(id))
+        log(`auto-mapped ${auto.mapped.size} labels by embedding similarity`)
+      }
+    } catch (e) {
+      opts.signal?.throwIfAborted()
+      log(`embedding auto-map skipped: ${(e as Error).message}`)
+    }
+  }
+
+  if (unmapped.length && !aiConfigured(settings)) throw new Error("AI provider is not configured. Add a base URL and model in Settings.")
+
+  const size = opts.batchSize ?? GROUP_BATCH
   let done = 0
   for (let i = 0; i < unmapped.length; i += size) {
     opts.signal?.throwIfAborted()
@@ -184,6 +352,7 @@ export async function groupLabels(
         select * from unnest(${rows.map((r) => r.label)}::text[], ${rows.map((r) => r.opportunity_id)}::bigint[])
         on conflict (label) do nothing`
       created += groups.length
+      ids.forEach((r) => touched.add(r.id))
     }
     if (map.size) {
       const entries = [...map]
@@ -193,10 +362,19 @@ export async function groupLabels(
         on conflict (label) do nothing`
       await sql`update opportunities set updated_at = now() where id = any(${[...new Set(map.values())]}::bigint[])`
       mapped += map.size
+      for (const id of map.values()) touched.add(id)
     }
     done += batch.length
     log(`grouped ${done}/${unmapped.length} labels`)
     opts.onProgress?.(`Grouping labels ${done}/${unmapped.length}`)
+  }
+
+  if (useVectors && touched.size) {
+    try {
+      await recomputeCentroids([...touched])
+    } catch (e) {
+      log(`centroid update skipped: ${(e as Error).message}`)
+    }
   }
   return { mapped, created }
 }
@@ -208,6 +386,7 @@ export interface Evidence {
   ref: string
   opportunity_id: number | null
   label: string | null
+  label_kind: string | null
   app_id: string | null
   app_name: string | null
   app_icon: string | null
@@ -230,21 +409,21 @@ const evidenceRel = (sql: Sql) => sql`
   select 'review'::text as source, r.app_id::text || ':' || r.review_id as ref, ol.opportunity_id as opp_id, r.label, r.label_kind,
     r.app_id, a.store, a.store_id, coalesce(nullif(a.name, ''), a.store_id) as app_name, a.icon_path as app_icon, a.country,
     a.own as own, r.rating::int as rating, r.title, r.body, r.evidence_span, r.wtp_signal, r.competitor_mentioned, r.workaround,
-    r.pain_score::int as pain, r.reviewed_at as dt, a.store_url as url
+    r.pain_score::int as pain, r.reviewed_at as dt, a.store_url as url, r.analysis_version::int as av
   from reviews r join apps a on a.id = r.app_id
   left join opportunity_labels ol on ol.label = lower(trim(r.label))
   union all
   select 'item', i.id::text, ol.opportunity_id, i.label, i.label_kind,
     i.app_id, a.store, a.store_id, coalesce(nullif(a.name, ''), a.store_id), a.icon_path, a.country,
     coalesce(a.own, false), null::int, null::text, i.body, i.evidence_span, i.wtp_signal, i.competitor_mentioned, i.workaround,
-    i.pain_score::int, i.posted_at, i.url
+    i.pain_score::int, i.posted_at, i.url, i.analysis_version::int
   from items i left join apps a on a.id = i.app_id
   left join opportunity_labels ol on ol.label = lower(trim(i.label))`
 
 export type OwnFilter = "exclude" | "only" | "all"
 const ownCond = (sql: Sql, own: OwnFilter = "exclude") => (own === "only" ? sql`own` : own === "all" ? sql`true` : sql`not own`)
 
-const EVIDENCE_COLS = `source, ref, opp_id as opportunity_id, label, app_id::text as app_id, app_name, app_icon, store, country, rating, title,
+const EVIDENCE_COLS = `source, ref, opp_id as opportunity_id, label, label_kind, app_id::text as app_id, app_name, app_icon, store, country, rating, title,
   body, evidence_span, wtp_signal, competitor_mentioned, workaround, pain as pain_score, dt as date, url`
 
 export interface OpportunityStats {
@@ -292,7 +471,7 @@ const SORTS = {
 } as const
 
 /** One statement: evidence union grouped by opportunity, with the score computed in SQL (see `opportunityScore`). */
-function statsSelect(sql: Sql, o: OpportunityQuery & { id?: number; requireEvidence: boolean }) {
+function statsSelect(sql: Sql, o: OpportunityQuery & { id?: number; requireEvidence: boolean }, weights: ScoreWeights) {
   const status = o.status ?? "active"
   const conds = [
     o.id !== undefined ? sql`o.id = ${o.id}` : sql`true`,
@@ -325,7 +504,7 @@ function statsSelect(sql: Sql, o: OpportunityQuery & { id?: number; requireEvide
         count(*) filter (where wtp_signal = 'churned')::int as churned,
         count(*) filter (where wtp_signal = 'workaround')::int as workaround,
         count(*) filter (where wtp_signal = 'stated_wtp')::int as stated_wtp,
-        coalesce(sum(exp(-ln(2) / 90 * (extract(epoch from now() - coalesce(dt, now() - interval '180 days')) / 86400))), 0)::float8 as recent,
+        coalesce(sum(exp(-ln(2) / ${weights.halfLifeDays}::float8 * (extract(epoch from now() - coalesce(dt, now() - interval '180 days')) / 86400))), 0)::float8 as recent,
         max(dt) as last_seen
       from scoped group by opp_id
     ),
@@ -343,8 +522,9 @@ function statsSelect(sql: Sql, o: OpportunityQuery & { id?: number; requireEvide
       json_build_object('paying_competitor', coalesce(s.paying_competitor, 0), 'churned', coalesce(s.churned, 0),
         'workaround', coalesce(s.workaround, 0), 'stated_wtp', coalesce(s.stated_wtp, 0)) as signals,
       coalesce(s.recent, 0)::float8 as recent, s.last_seen, coalesce(s.competitors, '[]'::json) as competitors,
-      (coalesce(s.recent, 0) * (1 + 0.5 * (greatest(coalesce(s.listings, 0), 1) - 1)) * (1 + coalesce(s.avg_pain, 0) / 5.0)
-        * (1 + 2 * coalesce(s.wtp_share, 0)))::float8 as score
+      (coalesce(s.recent, 0) * (1 + ${weights.listingWeight}::float8 * (greatest(coalesce(s.listings, 0), 1) - 1))
+        * (1 + ${weights.painWeight}::float8 * coalesce(s.avg_pain, 0) / 5.0)
+        * (1 + ${weights.wtpWeight}::float8 * coalesce(s.wtp_share, 0)))::float8 as score
     from opportunities o left join s on s.opp_id = o.id
     where ${where}
     order by ${order}, o.id`
@@ -352,7 +532,8 @@ function statsSelect(sql: Sql, o: OpportunityQuery & { id?: number; requireEvide
 
 /** Opportunities with their evidence statistics and score. Opportunities without evidence in the chosen view are omitted. */
 export async function listOpportunities(opts: OpportunityQuery = {}) {
-  return statsSelect(db(), { ...opts, requireEvidence: true })
+  const { score } = await getSettings()
+  return statsSelect(db(), { ...opts, requireEvidence: true }, weightsOf(score))
 }
 /** Alias of `listOpportunities`. */
 export const opportunityStats = listOpportunities
@@ -360,8 +541,9 @@ export const opportunityStats = listOpportunities
 export async function getOpportunity(id: number | string) {
   const sql = db()
   const n = oppId(id)
+  const { score } = await getSettings()
   const [[stats], evidence, labels, specRows] = await Promise.all([
-    statsSelect(sql, { id: n, status: "all", own: "all", requireEvidence: false }),
+    statsSelect(sql, { id: n, status: "all", own: "all", requireEvidence: false }, weightsOf(score)),
     sql<Evidence[]>`
       with ev as (${evidenceRel(sql)})
       select ${sql.unsafe(EVIDENCE_COLS)} from ev where opp_id = ${n}
@@ -493,6 +675,183 @@ export async function mergeOpportunities(fromId: number | string, intoId: number
     await tx`delete from opportunities where id = ${from}`
     await tx`update opportunities set updated_at = now() where id = ${into}`
   })
+  // The merged opportunity's centroid must cover the labels it just received (best effort; embeddings are optional).
+  await recomputeCentroids([into]).catch(() => 0)
+}
+
+/* ----------------------------------------------------------------- verdicts */
+
+export type VerdictSource = "review" | "item"
+export interface VerdictCorrection {
+  wtp_signal?: WtpSignalValue
+  label_kind?: "complaint" | "request" | "praise" | "other"
+  pain_score?: number
+  label?: string
+}
+type WtpSignalValue = (typeof WTP_SIGNALS)[number]
+export interface Verdict {
+  id: number
+  source: VerdictSource
+  ref: string
+  verdict: "correct" | "wrong"
+  corrected: VerdictCorrection | null
+  notes: string | null
+  analysis_version: number
+  created_at: Date
+}
+
+const LABEL_KINDS = ["complaint", "request", "praise", "other"] as const
+
+/** Keeps only well-formed correction fields; throws on values outside the fixed vocabularies. */
+function cleanCorrection(c: unknown): VerdictCorrection | null {
+  if (!c || typeof c !== "object") return null
+  const r = c as Record<string, unknown>
+  const out: VerdictCorrection = {}
+  if (r.wtp_signal !== undefined && r.wtp_signal !== null) {
+    if (!(WTP_SIGNALS as readonly unknown[]).includes(r.wtp_signal)) throw new Error(`Invalid wtp_signal "${String(r.wtp_signal)}"`)
+    out.wtp_signal = r.wtp_signal as WtpSignalValue
+  }
+  if (r.label_kind !== undefined && r.label_kind !== null) {
+    if (!(LABEL_KINDS as readonly unknown[]).includes(r.label_kind)) throw new Error(`Invalid label_kind "${String(r.label_kind)}"`)
+    out.label_kind = r.label_kind as VerdictCorrection["label_kind"]
+  }
+  if (r.pain_score !== undefined && r.pain_score !== null) {
+    const p = Number(r.pain_score)
+    if (!Number.isFinite(p) || p < 0 || p > 5) throw new Error("pain_score must be between 0 and 5")
+    out.pain_score = Math.round(p)
+  }
+  if (typeof r.label === "string" && r.label.trim()) out.label = r.label.trim().replace(/\.$/, "").slice(0, 80)
+  return Object.keys(out).length ? out : null
+}
+
+/** Splits an Evidence ref; review refs are `<app_id>:<review_id>`, item refs a bare id. */
+function parseRef(source: VerdictSource, ref: string) {
+  if (source === "item") {
+    if (!/^\d+$/.test(ref)) throw new Error("Invalid item ref")
+    return { itemId: ref }
+  }
+  const i = ref.indexOf(":")
+  const appId = ref.slice(0, i)
+  if (i < 0 || !/^[0-9a-f-]{36}$/i.test(appId) || i === ref.length - 1) throw new Error("Invalid review ref")
+  return { appId, reviewId: ref.slice(i + 1) }
+}
+
+/**
+ * Saves the human verdict on one classified review/item (one per row; recording again replaces it).
+ * Any `corrected` fields are also written onto the row so the fix shows up everywhere.
+ */
+export async function recordVerdict(v: {
+  source: VerdictSource
+  ref: string
+  verdict: "correct" | "wrong"
+  corrected?: VerdictCorrection | null
+  notes?: string | null
+}): Promise<Verdict> {
+  if (v.source !== "review" && v.source !== "item") throw new Error("source must be review or item")
+  if (v.verdict !== "correct" && v.verdict !== "wrong") throw new Error("verdict must be correct or wrong")
+  const corrected = cleanCorrection(v.corrected)
+  const p = parseRef(v.source, v.ref)
+  const sql = db()
+  return sql.begin(async (tx) => {
+    const [row] =
+      v.source === "review"
+        ? await tx<{ analysis_version: number }[]>`
+            select analysis_version::int from reviews where app_id = ${p.appId!}::uuid and review_id = ${p.reviewId!} for update`
+        : await tx<{ analysis_version: number }[]>`
+            select analysis_version::int from items where id = ${p.itemId!}::bigint for update`
+    if (!row) throw new Error("Evidence not found")
+    if (corrected) {
+      const set = tx`
+        wtp_signal = coalesce(${corrected.wtp_signal ?? null}, wtp_signal),
+        label_kind = coalesce(${corrected.label_kind ?? null}, label_kind),
+        pain_score = coalesce(${corrected.pain_score ?? null}::smallint, pain_score),
+        label = coalesce(${corrected.label ?? null}, label)`
+      if (v.source === "review") {
+        await tx`update reviews set ${set} where app_id = ${p.appId!}::uuid and review_id = ${p.reviewId!}`
+      } else {
+        await tx`update items set ${set} where id = ${p.itemId!}::bigint`
+      }
+    }
+    const [saved] = await tx<Verdict[]>`
+      insert into review_verdicts (source, ref, verdict, corrected, notes, analysis_version)
+      values (${v.source}, ${v.ref}, ${v.verdict}, ${corrected ? tx.json(corrected as never) : null}, ${v.notes?.trim() || null}, ${row.analysis_version})
+      on conflict (source, ref) do update set verdict = excluded.verdict, corrected = excluded.corrected, notes = excluded.notes,
+        analysis_version = excluded.analysis_version, created_at = now()
+      returning id::int, source, ref, verdict, corrected, notes, analysis_version::int, created_at`
+    return saved
+  })
+}
+
+/** Removes a verdict (the evidence row keeps any correction that was written through). Returns whether one existed. */
+export async function deleteVerdict(source: VerdictSource, ref: string) {
+  const rows = await db()`delete from review_verdicts where source = ${source} and ref = ${ref} returning id`
+  return rows.length > 0
+}
+
+/** Evidence classified by the current analyser and not yet judged; rows with a willingness-to-pay signal come first, then random. */
+export async function reviewQueue(opts: { limit?: number; onlySignals?: boolean } = {}) {
+  const sql = db()
+  const limit = Math.min(100, Math.max(1, Math.round(opts.limit ?? 20)))
+  const signals = opts.onlySignals ? sql`and coalesce(wtp_signal, 'none') <> 'none'` : sql``
+  return sql<Evidence[]>`
+    with ev as (${evidenceRel(sql)})
+    select ${sql.unsafe(EVIDENCE_COLS)} from ev
+    where av = ${ANALYSIS_VERSION}
+      and not exists (select 1 from review_verdicts v where v.source = ev.source and v.ref = ev.ref)
+      ${signals}
+    order by (coalesce(wtp_signal, 'none') <> 'none') desc, random() limit ${limit}`
+}
+
+export interface AccuracyStats {
+  total: number
+  correct: number
+  wrong: number
+  /** correct / total, 0 when there are no verdicts. */
+  accuracy: number
+  byVersion: { version: number; total: number; correct: number }[]
+  bySignal: { signal: string; total: number; correct: number }[]
+  byKind: { kind: string; total: number; correct: number }[]
+}
+
+/**
+ * How often the classifier was judged right. Verdicts are joined to their evidence
+ * row and bucketed by what the model originally said (`raw_analysis`), falling back
+ * to the stored value, so a correction does not move a verdict into another bucket.
+ */
+export async function accuracyStats(): Promise<AccuracyStats> {
+  const rows = await db()<{ version: number; signal: string; kind: string; total: number; correct: number }[]>`
+    with ev as (
+      select 'review'::text as source, r.app_id::text || ':' || r.review_id as ref, r.wtp_signal, r.label_kind, r.raw_analysis as raw from reviews r
+      union all
+      select 'item', i.id::text, i.wtp_signal, i.label_kind, i.raw_analysis from items i
+    )
+    select v.analysis_version::int as version,
+      case when ev.raw->>'wtp_signal' = any(${[...WTP_SIGNALS]}::text[]) then ev.raw->>'wtp_signal' else coalesce(ev.wtp_signal, 'none') end as signal,
+      case when ev.raw->>'kind' = any(${[...LABEL_KINDS]}::text[]) then ev.raw->>'kind' else coalesce(ev.label_kind, 'other') end as kind,
+      count(*)::int as total, count(*) filter (where v.verdict = 'correct')::int as correct
+    from review_verdicts v join ev on ev.source = v.source and ev.ref = v.ref
+    group by 1, 2, 3`
+  const roll = <K extends string>(key: "version" | "signal" | "kind", name: K) => {
+    const m = new Map<string | number, { total: number; correct: number }>()
+    for (const r of rows) {
+      const cur = m.get(r[key]) ?? { total: 0, correct: 0 }
+      cur.total += r.total
+      cur.correct += r.correct
+      m.set(r[key], cur)
+    }
+    return [...m].map(([k, v]) => ({ [name]: k, ...v }))
+  }
+  const total = rows.reduce((a, r) => a + r.total, 0)
+  const correct = rows.reduce((a, r) => a + r.correct, 0)
+  return {
+    total,
+    correct,
+    wrong: total - correct,
+    accuracy: total ? correct / total : 0,
+    byVersion: (roll("version", "version") as AccuracyStats["byVersion"]).sort((a, b) => a.version - b.version),
+    bySignal: (roll("signal", "signal") as AccuracyStats["bySignal"]).sort((a, b) => b.total - a.total || a.signal.localeCompare(b.signal)),
+    byKind: (roll("kind", "kind") as AccuracyStats["byKind"]).sort((a, b) => b.total - a.total || a.kind.localeCompare(b.kind)),
+  }
 }
 
 /* --------------------------------------------------------------------- spec */
@@ -605,7 +964,11 @@ export async function importItems(items: ItemInput[]) {
   return { inserted: rows.length, skipped: items.length - rows.length }
 }
 
-/** Classifies imported items with the same pass as reviews, then queues label grouping. */
+/**
+ * Classifies imported items with the same pass as reviews, then queues label grouping.
+ * In Anthropic batch mode the items are submitted to a Message Batch instead
+ * (`pollBatches` applies the results and queues the grouping).
+ */
 export async function analyseItems(
   opts: {
     batchSize?: number
@@ -614,33 +977,27 @@ export async function analyseItems(
     onProgress?: (m: string) => void
     signal?: AbortSignal
   } = {},
-) {
+): Promise<{ classified: number; batched?: number }> {
   const settings = await getSettings()
   if (!aiConfigured(settings)) throw new Error("AI provider is not configured. Add a base URL and model in Settings.")
-  const sql = db()
   const log = opts.log ?? (() => {})
-  const batchSize = opts.batchSize ?? 20
-  const pending = await sql<PendingReview[]>`
-    select id::text as review_id, null::int as rating, null::text as title, body from items
-    where analysed_at is null or analysis_version < ${ANALYSIS_VERSION} order by id`
+  if (settings.ai.provider === "anthropic" && settings.ai.batch) {
+    opts.onProgress?.("Submitting items to a Message Batch")
+    const batched = await submitClassificationBatch("items", null, { batchSize: opts.batchSize })
+    log(`submitted ${batched} items to a batch`)
+    return { classified: 0, batched }
+  }
+  const pending = await pendingItems()
   let classified = 0
   let done = 0
-  const batches = Array.from({ length: Math.ceil(pending.length / batchSize) }, (_, i) => pending.slice(i * batchSize, (i + 1) * batchSize))
+  const size = opts.batchSize ?? 20
+  const batches = Array.from({ length: Math.ceil(pending.length / size) }, (_, i) => pending.slice(i * size, (i + 1) * size))
   await mapLimit(
     batches,
     opts.concurrency ?? 3,
     async (batch) => {
       const rows = await classifyBatch(settings.ai, batch)
-      if (rows.length) {
-        await sql`
-          update items i set sentiment = v.sentiment, topic = v.topic, label = nullif(v.label, ''), label_kind = v.kind,
-            wtp_signal = v.wtp_signal, competitor_mentioned = v.competitor, workaround = v.workaround, evidence_span = v.evidence,
-            pain_score = v.pain, raw_analysis = v.raw, analysis_version = ${ANALYSIS_VERSION}, analysed_at = now()
-          from jsonb_to_recordset(${sql.json(rows as never)})
-            as v(id text, sentiment text, topic text, label text, kind text, wtp_signal text, competitor text, workaround text,
-                 evidence text, pain smallint, raw jsonb)
-          where i.id::text = v.id`
-      }
+      await applyClassifications("items", null, rows)
       classified += rows.length
       done += batch.length
       log(`classified ${classified}/${pending.length} items`)
