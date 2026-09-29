@@ -60,16 +60,33 @@ suite("pipeline", () => {
         user = null
       }
       let content: unknown
-      if (user === null) {
+      if (msgs[0].content.includes("SPEC")) {
+        content = "# Spec\n\n## 1. Problem in the users' words\nQ1\n\n## 3. MVP scope\n1. Free sample before the paywall"
+      } else if (user === null) {
         content = { ok: true }
+      } else if (user && typeof user === "object" && "labels" in user) {
+        // grouping: labels containing "paywall" merge into one opportunity (or an existing one); the rest stand alone
+        const g = user as { existing: { id: number; label: string }[]; labels: { label: string; kind: string }[] }
+        const map: unknown[] = []
+        const fresh: { label: string; kind: string; labels: string[] }[] = []
+        for (const l of g.labels) {
+          const known = g.existing.find((e) => e.label.toLowerCase() === l.label)
+          if (known) map.push({ label: l.label, opportunity_id: known.id })
+          else fresh.push({ label: l.label, kind: l.kind, labels: [l.label] })
+        }
+        content = { map, new: fresh }
       } else if (Array.isArray(user)) {
         content = {
           items: user.map((r: { id: string; rating: number; text: string }) => ({
             id: r.id,
             sentiment: r.rating >= 4 ? "positive" : r.rating === 3 ? "neutral" : "negative",
             topic: r.rating <= 2 ? "Pricing" : "Praise",
-            kind: r.rating <= 2 ? "complaint" : r.rating === 3 ? "request" : "praise",
-            label: r.rating <= 2 ? "Paywall before trying content" : "Arabic narration",
+            kind: r.text.includes("offline") ? "request" : !r.rating || r.rating <= 2 ? "complaint" : r.rating === 3 ? "request" : "praise",
+            label: r.text.includes("offline")
+              ? "Offline mode — sleep stories"
+              : r.rating <= 2
+                ? "Paywall before trying content"
+                : "Arabic narration",
             wtp_signal: r.text.includes("Paywall hit") ? "churned" : "none",
             competitor: r.text.includes("Paywall hit") ? "Headspace" : null,
             workaround: null,
@@ -83,7 +100,7 @@ suite("pipeline", () => {
         content = { complaints: u.complaints, requests: u.requests, summary: "Offer a free sample before the paywall." }
       }
       res.setHeader("content-type", "application/json")
-      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }))
+      res.end(JSON.stringify({ choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) } }] }))
     })
     await new Promise<void>((r) => aiServer.listen(0, r))
     aiUrl = `http://127.0.0.1:${(aiServer.address() as { port: number }).port}/v1`
@@ -341,6 +358,151 @@ suite("pipeline", () => {
     expect((await core.activeJobs(appId)).map((j) => j.type)).toEqual(["analyse_app"])
     expect((await core.analyseApp(appId)).classified).toBe(2)
     expect(await core.unanalysedCount(appId)).toBe(0)
+    await core.db()`delete from jobs`
+  })
+
+  it("groups labels into opportunities and ranks them", async () => {
+    expect(await core.groupLabels()).toEqual({ mapped: 0, created: 2 })
+    expect(await core.groupLabels()).toEqual({ mapped: 0, created: 0 }) // nothing unmapped: the model is not asked
+    const list = await core.listOpportunities()
+    expect(list.map((o) => o.label).sort()).toEqual(["arabic narration", "paywall before trying content"])
+    const paywall = list.find((o) => o.label === "paywall before trying content")!
+    expect(paywall).toMatchObject({ kind: "complaint", status: "surfaced", listings: 1, apps: 1 })
+    expect(paywall.n).toBeGreaterThan(1)
+    expect(paywall.score).toBeGreaterThan(0)
+    expect(paywall.signals).toEqual({ paying_competitor: 0, churned: 1, workaround: 0, stated_wtp: 0 })
+    expect(paywall.competitors).toEqual([{ name: "Headspace", count: 1 }])
+    expect(paywall.avg_pain).toBeCloseTo(4, 5)
+    expect(list[0].id).toBe(paywall.id) // highest score first
+    expect((await core.listOpportunities({ kind: "request" })).map((o) => o.label)).toEqual(["arabic narration"])
+    expect(await core.listOpportunities({ q: "nomatch" })).toEqual([])
+    expect((await core.navSummary()).opportunities).toBe(2)
+    expect((await core.dashboardStats()).opportunities).toBe(2)
+    expect((await core.dashboardStats()).signals).toBeGreaterThanOrEqual(0)
+  })
+
+  it("keeps own apps out of the default view", async () => {
+    expect(await core.listOpportunities({ own: "only" })).toEqual([])
+    await core.setAppOwn(appId, true)
+    expect(await core.listOpportunities()).toEqual([])
+    expect(await core.listOpportunities({ own: "only" })).toHaveLength(2)
+    expect(await core.listOpportunities({ own: "all" })).toHaveLength(2)
+    await core.setAppOwn(appId, false)
+    expect(await core.listOpportunities({ own: "only" })).toEqual([])
+  })
+
+  it("counts an app once per listing, not per country", async () => {
+    const [b] = await core.db()<{ id: string }[]>`
+      insert into apps (store, store_id, country, lang, name) values ('ios', '571800810', 'us', 'en', 'Calm US') returning id`
+    await core.db()`
+      insert into reviews (app_id, review_id, rating, body, label, label_kind, reviewed_at, wtp_signal, pain_score, analysed_at, analysis_version)
+      values (${b.id}, 'u1', 1, 'no free trial', 'Paywall before trying content', 'complaint', now(), 'none', 2, now(), ${core.ANALYSIS_VERSION})`
+    const paywall = (await core.listOpportunities()).find((o) => o.label === "paywall before trying content")!
+    expect(paywall).toMatchObject({ apps: 2, listings: 1 })
+    await core.db()`delete from apps where id = ${b.id}`
+    // an unmapped label of a removed app is gone with it; nothing left to group
+    expect(await core.groupLabels()).toEqual({ mapped: 0, created: 0 })
+  })
+
+  it("imports items, dedupes them and analyses them into the evidence", async () => {
+    const first = await core.importItems([
+      { body: "I wish there was an offline mode for sleep stories on flights", url: "https://example.com/t/1", source: "reddit" },
+      { body: "  i wish there was an  OFFLINE mode for sleep stories on flights ", source: "reddit" }, // same text, same source
+      { body: "   " },
+    ])
+    expect(first).toEqual({ inserted: 1, skipped: 2 })
+    expect(await core.importItems([{ body: "I wish there was an offline mode for sleep stories on flights", source: "reddit" }])).toEqual({
+      inserted: 0,
+      skipped: 1,
+    })
+    await core.db()`delete from jobs`
+    expect((await core.analyseItems()).classified).toBe(1)
+    expect((await core.analyseItems()).classified).toBe(0)
+    expect((await core.recentJobs()).map((j) => j.type)).toEqual(["group_labels"])
+    const [item] = await core.db()<{ label: string; label_kind: string }[]>`select label, label_kind from items`
+    expect(item).toEqual({ label: "Offline mode — sleep stories", label_kind: "request" })
+
+    expect(await core.groupLabels()).toEqual({ mapped: 0, created: 1 })
+    const opp = (await core.listOpportunities()).find((o) => o.label === "offline mode — sleep stories")!
+    expect(opp).toMatchObject({ n: 1, listings: 0, apps: 0, kind: "request" })
+    expect(opp.score).toBeGreaterThan(0)
+    const detail = (await core.getOpportunity(opp.id))!
+    expect(detail.evidence).toHaveLength(1)
+    expect(detail.evidence[0]).toMatchObject({ source: "item", url: "https://example.com/t/1", app_name: null })
+    expect(detail.labels).toEqual([{ label: "offline mode — sleep stories", count: 1 }])
+    expect((await core.searchEvidence({ q: "flights" })).total).toBe(1)
+    expect((await core.searchEvidence({ signal: "churned" })).rows.map((e) => e.ref)).toEqual([`${appId}:r0`])
+    expect((await core.searchEvidence({ minPain: 4 })).total).toBeGreaterThan(1)
+    expect((await core.searchEvidence({ label: "offline", limit: 5 })).total).toBe(1)
+    await core.db()`delete from jobs`
+  })
+
+  it("generates a spec and manages the opportunity lifecycle", async () => {
+    const list = await core.listOpportunities()
+    const paywall = list.find((o) => o.label === "paywall before trying content")!
+    const md = await core.generateSpec(paywall.id)
+    expect(md).toMatch(/## 3|MVP/)
+    const detail = (await core.getOpportunity(paywall.id))!
+    expect(detail.spec_md).toBe(md)
+    expect(detail.has_spec).toBe(true)
+
+    await core.saveGate(paywall.id, { checks: { scope: true, demand: false }, notes: "ok" })
+    await expect(core.saveGate(paywall.id, { checks: { nope: true } })).rejects.toThrow(/Unknown gate check/)
+    expect((await core.getOpportunity(paywall.id))!.gate).toMatchObject({ checks: { scope: true, demand: false }, notes: "ok" })
+    await core.recordOutcome(paywall.id, { installs: 120, paying: 2 })
+    expect((await core.getOpportunity(paywall.id))!.outcome).toMatchObject({ installs: 120, trial_starts: 0, paying: 2 })
+    await core.updateOpportunity(paywall.id, { label: "Free sample — before paywall", notes: "n" })
+    expect(await core.getOpportunity(paywall.id)).toMatchObject({ label: "Free sample — before paywall", notes: "n" })
+
+    await core.setOpportunityStatus(paywall.id, "validating")
+    expect((await core.listOpportunities({ status: "validating" })).map((o) => o.id)).toEqual([paywall.id])
+    await core.setOpportunityStatus(paywall.id, "killed", { reason: "too crowded", revisitAfter: "2027-01-01" })
+    expect((await core.listOpportunities()).map((o) => o.id)).not.toContain(paywall.id)
+    expect((await core.listOpportunities({ status: "killed" })).map((o) => o.id)).toEqual([paywall.id])
+    expect((await core.getOpportunity(paywall.id))!.killed_reason).toBe("too crowded")
+    expect((await core.navSummary()).opportunities).toBe(2)
+
+    // a new label meaning the same thing maps onto the killed opportunity and stays hidden
+    await core.db()`
+      insert into reviews (app_id, review_id, rating, body, label, label_kind, reviewed_at, analysed_at, analysis_version)
+      values (${appId}, 'k1', 1, 'x', 'Free sample — before paywall', 'complaint', now(), now(), ${core.ANALYSIS_VERSION})`
+    expect(await core.groupLabels()).toEqual({ mapped: 1, created: 0 })
+    expect((await core.listOpportunities()).map((o) => o.id)).not.toContain(paywall.id)
+    await core.db()`delete from reviews where review_id = 'k1'`
+
+    await core.setOpportunityStatus(paywall.id, "surfaced")
+    const other = list.find((o) => o.label === "arabic narration")!
+    await core.mergeOpportunities(other.id, paywall.id)
+    expect(await core.getOpportunity(other.id)).toBeNull()
+    const merged = (await core.getOpportunity(paywall.id))!
+    expect(merged.labels.map((l) => l.label).sort()).toEqual([
+      "arabic narration",
+      "free sample — before paywall",
+      "paywall before trying content",
+    ])
+    await expect(core.mergeOpportunities(paywall.id, paywall.id)).rejects.toThrow(/itself/)
+  })
+
+  it("refuses the same Google Play app in a second country", async () => {
+    const a = await core.addApp({ store: "android", storeId: "com.example.app", country: "us" })
+    await expect(core.addApp({ store: "android", storeId: "com.example.app", country: "eg" })).rejects.toThrow(/not per country/)
+    expect((await core.addApp({ store: "android", storeId: "com.example.app", country: "us", lang: "ar" })).id).toBe(a.id)
+    await core.db()`delete from apps where id = ${a.id}`
+    await core.db()`delete from jobs`
+  })
+
+  it("never runs two group_labels jobs at once", async () => {
+    await core.db()`delete from jobs`
+    const a = await core.enqueue("group_labels")
+    await core.db()`insert into jobs (type) values ('group_labels')`
+    await core.enqueue("analyse_items")
+    const first = await core.claimJob()
+    expect(first?.id).toBe(a)
+    const second = await core.claimJob()
+    expect(second?.type).toBe("analyse_items") // the other group_labels waits
+    expect(await core.claimJob()).toBeNull()
+    await core.finishJob(a, "ok")
+    expect((await core.claimJob())?.type).toBe("group_labels")
     await core.db()`delete from jobs`
   })
 

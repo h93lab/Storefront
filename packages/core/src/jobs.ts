@@ -1,6 +1,6 @@
 import { db } from "./db"
 
-export type JobType = "sync_app" | "sync_all" | "analyse_app" | "analyse_all"
+export type JobType = "sync_app" | "sync_all" | "analyse_app" | "analyse_all" | "group_labels" | "generate_spec" | "analyse_items"
 
 export interface Job {
   id: string
@@ -35,7 +35,8 @@ const JOB_COLS = "id::text, type, payload, status, result, error, attempts, prog
 
 /**
  * Claims the oldest job that is due. Jobs for an app that already has a
- * running job wait, so two workers never sync the same app at once.
+ * running job wait, so two workers never sync the same app at once; so do
+ * group_labels / analyse_items jobs while one of the same type runs.
  */
 export async function claimJob(): Promise<Job | null> {
   const sql = db()
@@ -50,6 +51,8 @@ export async function claimJob(): Promise<Job | null> {
         where q.status = 'queued' and q.run_after <= now()
           and not (q.payload ? 'appId' and exists (
             select 1 from jobs r where r.status = 'running' and r.payload->>'appId' = q.payload->>'appId'))
+          and not (q.type in ('group_labels', 'analyse_items') and exists (
+            select 1 from jobs r where r.status = 'running' and r.type = q.type))
         order by q.id for update skip locked limit 1)
       returning ${tx.unsafe(JOB_COLS)}`
     return job ?? null

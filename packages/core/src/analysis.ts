@@ -104,11 +104,11 @@ export function normaliseItem(raw: Partial<Classified> & Record<string, unknown>
   }
 }
 
-type PendingReview = { review_id: string; rating: number | null; title: string | null; body: string | null }
+export type PendingReview = { review_id: string; rating: number | null; title: string | null; body: string | null }
 
 const reviewText = (r: PendingReview) => `${r.title ?? ""}\n${r.body ?? ""}`.trim().slice(0, 1200)
 
-async function classifyBatch(cfg: Settings["ai"], batch: PendingReview[]) {
+export async function classifyBatch(cfg: Settings["ai"], batch: PendingReview[]) {
   const payload = batch.map((r) => ({ id: r.review_id, rating: r.rating, text: reviewText(r) }))
   const reply = await chat(
     cfg,
@@ -200,6 +200,7 @@ export async function analyseApp(
     opts.signal,
   )
   opts.signal?.throwIfAborted()
+  if (classified > 0) await enqueue("group_labels")
 
   opts.onProgress?.("Summarising complaints and requests")
   const recent = sql`select * from reviews where app_id = ${appId} and analysed_at is not null order by reviewed_at desc nulls last limit ${limit}`

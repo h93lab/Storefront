@@ -278,6 +278,8 @@ export async function dashboardStats() {
       neutral: number
       negative: number
       errors: number
+      opportunities: number
+      signals: number
     }[]
   >`
     select
@@ -290,7 +292,10 @@ export async function dashboardStats() {
       coalesce((select sum((sentiment->>'positive')::int)::int from insights), 0) as positive,
       coalesce((select sum((sentiment->>'neutral')::int)::int from insights), 0) as neutral,
       coalesce((select sum((sentiment->>'negative')::int)::int from insights), 0) as negative,
-      (select count(*)::int from apps where status = 'error') as errors`
+      (select count(*)::int from apps where status = 'error') as errors,
+      (select count(*)::int from opportunities where status = 'surfaced') as opportunities,
+      ((select count(*) from reviews where wtp_signal <> 'none' and coalesce(reviewed_at, fetched_at) > now() - interval '30 days')
+        + (select count(*) from items where wtp_signal <> 'none' and coalesce(posted_at, fetched_at) > now() - interval '30 days'))::int as signals`
   const perDay = await sql<{ day: string; count: number }[]>`
     select to_char(d, 'YYYY-MM-DD') as day, coalesce(count(r.*), 0)::int as count
     from generate_series(current_date - 29, current_date, interval '1 day') d
@@ -314,9 +319,12 @@ export async function compareApps(ids: string[]) {
 
 /** Everything the app shell (sidebar, command menu) needs, in one round trip. */
 export async function navSummary() {
-  const [row] = await db()<{ apps: { id: string; name: string; store: Store; icon: string | null }[] | null; boards: number }[]>`
+  const [row] = await db()<
+    { apps: { id: string; name: string; store: Store; icon: string | null }[] | null; boards: number; opportunities: number }[]
+  >`
     select
       (select json_agg(json_build_object('id', id, 'name', coalesce(nullif(name, ''), store_id), 'store', store, 'icon', icon_path) order by created_at desc) from apps) as apps,
-      (select count(*)::int from boards) as boards`
-  return { apps: row.apps ?? [], boards: row.boards }
+      (select count(*)::int from boards) as boards,
+      (select count(*)::int from opportunities where status <> 'killed') as opportunities`
+  return { apps: row.apps ?? [], boards: row.boards, opportunities: row.opportunities }
 }
