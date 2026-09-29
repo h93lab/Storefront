@@ -23,6 +23,7 @@ import { AppIcon } from "@/components/app-icon"
 import { AppTabs } from "@/components/app-tabs"
 import { ChangesTimeline } from "@/components/changes-timeline"
 import { JobWatcher } from "@/components/job-watcher"
+import { OwnAppSwitch } from "@/components/own-app-switch"
 import { LanguageSelect } from "@/components/language-select"
 import { SyncIssues, SyncReportCard } from "@/components/sync-report"
 import { RatingChart } from "@/components/charts"
@@ -71,6 +72,7 @@ export default async function AppPage({ params, searchParams }: Params) {
   for (const pr of [overviewP, screensP, reviewsP, insightsP]) pr?.catch(() => {})
   const [app, jobs, changes] = await Promise.all([loadApp(id), validId ? activeJobs(id) : [], validId ? getChanges({ appId: id }) : []])
   if (!app) notFound()
+  const own = app.own
   // Only a queued or running job means work is happening; a stale status alone does not.
   const syncing = jobs.some((j) => j.type === "sync_app")
   const analysing = jobs.some((j) => j.type === "analyse_app")
@@ -229,6 +231,9 @@ export default async function AppPage({ params, searchParams }: Params) {
                     </div>
                   ))}
                 </dl>
+                <div className="mt-4 border-t pt-4">
+                  <OwnAppSwitch appId={id} own={own} />
+                </div>
               </CardContent>
             </Card>
             <SyncReportCard report={app.sync_report} lastSyncedAt={app.last_synced_at} />
@@ -480,6 +485,7 @@ export default async function AppPage({ params, searchParams }: Params) {
             <div className="flex flex-wrap gap-1.5">
               <Badge variant="outline">{storeLabel(app.store)}</Badge>
               <Badge variant="secondary">{app.country.toUpperCase()}</Badge>
+              {own && <Badge>My app</Badge>}
               {app.rating != null && (
                 <Badge variant="outline" className="tabular-nums">
                   <Star className="fill-star text-star" />

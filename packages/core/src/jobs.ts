@@ -1,6 +1,16 @@
 import { db } from "./db"
 
-export type JobType = "sync_app" | "sync_all" | "analyse_app"
+export type JobType =
+  | "sync_app"
+  | "sync_all"
+  | "analyse_app"
+  | "analyse_all"
+  | "group_labels"
+  | "generate_spec"
+  | "analyse_items"
+  | "fetch_reddit"
+  | "generate_validation"
+  | "embed_labels"
 
 export interface Job {
   id: string
@@ -35,7 +45,8 @@ const JOB_COLS = "id::text, type, payload, status, result, error, attempts, prog
 
 /**
  * Claims the oldest job that is due. Jobs for an app that already has a
- * running job wait, so two workers never sync the same app at once.
+ * running job wait, so two workers never sync the same app at once; so do
+ * group_labels / analyse_items jobs while one of the same type runs.
  */
 export async function claimJob(): Promise<Job | null> {
   const sql = db()
@@ -50,6 +61,8 @@ export async function claimJob(): Promise<Job | null> {
         where q.status = 'queued' and q.run_after <= now()
           and not (q.payload ? 'appId' and exists (
             select 1 from jobs r where r.status = 'running' and r.payload->>'appId' = q.payload->>'appId'))
+          and not (q.type in ('group_labels', 'analyse_items', 'fetch_reddit', 'embed_labels') and exists (
+            select 1 from jobs r where r.status = 'running' and r.type = q.type))
         order by q.id for update skip locked limit 1)
       returning ${tx.unsafe(JOB_COLS)}`
     return job ?? null
@@ -110,6 +123,7 @@ export interface ActiveJob {
   type: JobType
   status: "queued" | "running"
   app_id: string | null
+  opportunity_id: string | null
   progress: string | null
   error: string | null
   run_after: Date
@@ -118,7 +132,7 @@ export interface ActiveJob {
 /** Queued and running jobs, optionally for one app. Cheap enough to poll. */
 export async function activeJobs(appId?: string) {
   return db()<ActiveJob[]>`
-    select id::text, type, status, payload->>'appId' as app_id, progress, error, run_after
+    select id::text, type, status, payload->>'appId' as app_id, payload->>'opportunityId' as opportunity_id, progress, error, run_after
     from jobs where status in ('queued', 'running')
       and (${appId ?? null}::text is null or payload->>'appId' = ${appId ?? ""})
     order by id`

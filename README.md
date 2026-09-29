@@ -1,10 +1,10 @@
 # Storefront Lens
 
-A private, self-hosted library of App Store and Google Play apps: listings, screenshots, reviews, AI review analysis, change tracking and project boards. It includes an MCP server so any AI agent can use the library.
+A private, self-hosted library of App Store and Google Play apps: listings, screenshots, reviews, AI review analysis, change tracking, project boards and an opportunity radar (H93) that groups recurring complaints and requests across apps into ranked product opportunities. It includes an MCP server so any AI agent can use the library.
 
 - **Web UI**: Next.js 16 + [shadcn/ui](https://ui.shadcn.com) (neutral theme, light and dark)
 - **Worker**: syncs every app on a schedule, detects changes, runs the AI analysis
-- **MCP server**: 15 tools over Streamable HTTP, protected by a bearer token
+- **MCP server**: 29 tools over Streamable HTTP, protected by a bearer token
 - **Storage**: data in Supabase Postgres (or local Postgres); images as WebP on your server's disk
 
 ---
@@ -129,6 +129,50 @@ Claude Desktop و Cursor وغيرهم (JSON):
 
 بيحفظ الداتابيز والصور في `backups/`. مع Supabase لازم `DATABASE_BACKUP_URL` في `.env` يكون الـ **Session pooler** (port `5432`)، لأن `pg_dump` مابيشتغلش على الـ transaction pooler.
 
+### 9) الفرص (H93)
+
+الفرصة (opportunity) هي شكوى أو طلب بيتكرر في تعليقات أكتر من تطبيق، يعني حاجة ناقصة الناس عايزاها ("Offline mode — sleep stories" مثلاً). المنصة بتجمع كل التعليقات المتشابهة تحت فرصة واحدة وبترتبها بسكور.
+
+الخطوات:
+
+1. ضيف التطبيقات المنافسة واستنى الـ sync.
+2. التحليل بيشتغل لوحده بعد الـ sync (لازم الـ AI يكون متظبط في Settings).
+3. بعد التحليل بيتشغل تجميع الـ labels (`group_labels`) لوحده، وكمان كل ليلة مع الـ sync. تقدر تشغله بإيدك من صفحة الفرص.
+4. افتح **/opportunities**. الفرص مترتبة بالسكور، وكل فرصة فيها الاقتباسات الحرفية من التعليقات.
+
+جوه أي فرصة:
+
+- **الـ Gate**: 8 أسئلة نعم/لا تجاوب عليها قبل ما تبني. لو فشلت في `permissions` أو `single_player` أو `data_legal` يبقى الفكرة تتقتل، مش تتعاد.
+- **Generate spec**: بيكتب لك مواصفات بناء كاملة (Markdown) من الأدلة، بتلاقيها في تاب Spec وتقدر تنسخها أو تنزلها.
+- **Import** (صفحة `/import`): الزق نصوص من بره المتاجر (Reddit، إيميلات دعم، منتديات). بتتحلل وبتدخل كأدلة مع التعليقات. النص المكرر بيتتجاهل.
+- **This is my app**: من صفحة التطبيق علّم تطبيقك انت. أدلته بتتشال من قوائم الفرص لحد ما تختار "own only".
+
+نصيحة: لو التطبيق على iOS وعايز تغطي أكتر من دولة، ضيفه مرة لكل دولة (الـ store id واحد). الفرصة بتعدّ التطبيق مرة واحدة بس مهما كان عدد الدول. أما Google Play فالتعليقات مش بتختلف بالدولة، فالتطبيق بيتضاف مرة واحدة بس، ولو حاولت تضيفه بدولة تانية هيرفض. غيّر لغة التعليقات بدل كده.
+
+الفرص اللي تقتلها بتفضل مخفية (المقبرة)، وأي label جديد بنفس المعنى بيتربط بيها تلقائي ومش بيرجع يظهر كفرصة مكررة.
+
+### 10) الفرص: المزوّد، الـ embeddings، Reddit والمراجعة
+
+كل الإعدادات دي من **Settings** في المنصة. مفيش أي حاجة جديدة في `.env`.
+
+**اختيار المزوّد**: في كارت **AI provider** اختار `anthropic` لو عايز تكلم Anthropic مباشرة، أو سيبه OpenAI-compatible زي ما هو. مع Anthropic تقدر تفعّل **Message Batches**: التصنيف بيتبعت دفعة واحدة وبيتحاسب بنص السعر (أرخص 50%)، بس النتيجة مش فورية. الدفعة بتخلص في العادي خلال دقايق لحد ساعات، والـ worker بيسأل عليها كل دقيقة ولما تخلص بيطبّق النتايج لوحده ويكمّل الملخص وتجميع الـ labels. ملاحظة الـ caching: الـ system prompt متعلّم للـ cache، بس Haiku 4.5 محتاج prefix لا يقل عن 4096 token عشان الـ cache يشتغل، أما Sonnet 5.5 و Opus 5.5 فمحتاجين 512 بس، يعني الفايدة أكبر مع الموديلات الكبيرة.
+
+**الـ embeddings (اختياري)**: من كارت **Embeddings** حط Base URL وKey وموديل. بيشتغل مع Voyage (`https://api.voyageai.com/v1`) أو OpenAI (`https://api.openai.com/v1`). لازم الـ dimensions تبقى 1024. لو سبت الـ Base URL فاضي الميزة بتقفل والتجميع بيعتمد على الموديل بس. بيدمج الليبلز المتشابهة تلقائي، وبيكشف لو الـ label الجديد شبه فكرة اتقتلت قبل كده (المقبرة) فمابيرجعهاش. تاب الفرصة بيعرض كمان الفرص المشابهة. محتاج إضافة pgvector في الداتابيز، ولو مش موجودة كل حاجة تانية بتشتغل عادي.
+
+**أوزان الـ score**: كارت **Scoring** فيه وزن التطبيقات (`listingWeight`) ووزن الألم (`painWeight`) ووزن الدفع (`wtpWeight`) ونص عمر التعليق بالأيام (`halfLifeDays`) وحد الربط التلقائي بالـ embeddings (`autoMapThreshold`). أي تغيير بيتطبق فوراً على كل القوايم.
+
+**Reddit**: من [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) اضغط **create another app** واختار النوع **script**، وحط أي redirect uri (مثلاً `http://localhost`). خد الـ client id (تحت اسم الـ app) والـ secret، وحطهم في كارت **Reddit** في Settings مع User-Agent يعرّف بيك (مثلاً `storefront-lens/1.0 by u/اسمك`) وقائمة الـ subreddits والكلمات المفتاحية. الاستخدام لازم يكون شخصي وغير تجاري، حسب سياسة Reddit للـ Data API، ومن غير موافقتهم مايتخطاش كده. الـ worker بيسحب البوستات المطابقة كل ليلة، وبيبعت طلب واحد كل 700 ms بس.
+
+**صفحة Review (`/review`)**: بتوريك تعليقات مصنّفة وانت تحكم إن التصنيف صح ولا غلط، ولو غلط تصححه (الإشارة، النوع، الألم، الـ label) والتصحيح بيتكتب على التعليق نفسه. الصفحة بتحسب دقة المصنّف من الأحكام دي، إجمالي وحسب الإشارة والنوع. الهدف تحكم على **200 عنصر** على الأقل عشان الرقم يبقى ليه معنى. ابدأ بالعناصر اللي فيها إشارة دفع.
+
+**تاب Validation**: داخل أي فرصة دوس Generate عشان يطلّع لك kit جاهز للـ fake-door test (عنوان، نقط، زرار، سعر، رد على thread، نص الـ waitlist). بعد ما تنشره سجّل الأرقام: `waitlist` و`price_clicks` و`replies` وتاريخ البداية. القرار:
+
+- **proceed** لو الـ waitlist 20 أو أكتر، أو نقرات السعر 5 أو أكتر، أو الردود 3 أو أكتر.
+- **kill** لو مفيش ولا واحدة منهم وعدى 5 أيام أو أكتر من البداية.
+- غير كده **pending**.
+
+**عرض Outcomes**: في **/opportunities** دوس Outcomes عشان تشوف الفرص اللي اتشحنت أو اتقتلت جنب السكور والـ Gate والـ Validation وأرقام التثبيتات والتجارب والعملاء.
+
 ### التحديث
 
 ```bash
@@ -181,7 +225,7 @@ docker compose exec worker node_modules/.bin/tsx ../../packages/core/src/cli/doc
 apps/web      Next.js UI (shadcn/ui), server actions, /media route for stored images
 apps/worker   Job runner + cron schedule (croner). Runs migrations on start.
 apps/mcp      Stateless MCP server (Streamable HTTP, JSON responses), bearer-token auth
-packages/core Store clients, sync pipeline, change detection, AI analysis, queries
+packages/core Store clients, sync pipeline, change detection, AI analysis, opportunities.ts (label grouping, evidence, score, gate, specs), queries
 db/migrations SQL schema, applied automatically
 ```
 
@@ -193,7 +237,72 @@ The web app and the MCP server enqueue jobs in the `jobs` table; the worker clai
 
 **Jobs** report live progress, retry transient failures (timeouts, 429, 5xx, network) up to 3 times with backoff, and run two at a time without ever syncing the same app twice. A job interrupted by a restart is requeued on the next start.
 
-**AI analysis**: unanalysed reviews go to the configured model in batches of 40 (three in parallel) and come back with sentiment, one of 11 fixed topics, and a short complaint/request label. A second call merges similar labels into the top complaints and requests and writes a short summary.
+**AI analysis**: unanalysed reviews go to the configured model in batches of 20 (three in parallel) and come back with sentiment, one of 11 fixed topics, a short complaint/request label, and opportunity signals: a willingness-to-pay signal (`paying_competitor`, `churned`, `workaround`, `stated_wtp` or `none`), any competitor named, the workaround described, a verbatim evidence quote (dropped unless it appears in the review word for word) and a pain score 0–5. The model's raw item is kept in `reviews.raw_analysis`. A second call merges similar labels into the top complaints and requests and writes a short summary. Each review records the `analysis_version` it was classified with; when the classifier changes, **Settings → Re-analyse all apps** (or the `analyse_all` job) sends older rows through again.
+
+### Opportunities (H93)
+
+**Model.** An opportunity is one recurring missing capability ("Offline mode — sleep stories"). The `group_labels` job takes every distinct `lower(trim(label))` of complaint/request reviews and imported items that is not yet in `opportunity_labels`, and asks the model (batches of 120) to map each onto an existing opportunity or to form new ones. Embeddings are optional (see Embeddings below). Canonical labels are `<missing capability> — <context>`, at most 60 characters, without app names. A label the model skips becomes an opportunity of its own; replies that are not valid JSON fall back to one opportunity per label. Evidence is the union of reviews and items joined through `opportunity_labels`. Merging two opportunities moves all labels onto one.
+
+**Score.** `recent × (1 + listingWeight × (listings − 1)) × (1 + painWeight × avg_pain / 5) × (1 + wtpWeight × wtp_share)` with the defaults 0.5, 1 and 2 (see Scoring weights below). `recent` is the evidence count weighted by a half-life of `halfLifeDays` (90 by default) (undated evidence counts as 180 days old). `listings` is the number of distinct `(store, store_id)` pairs with evidence (minimum 1), so one app tracked in five countries counts once. `avg_pain` is the mean pain score 0–5. `wtp_share` is the share of evidence whose signal is `paying_competitor`, `churned`, `workaround` or `stated_wtp`. The same formula lives in SQL (`statsSelect`) and in `opportunityScore()`. Lists exclude your own apps by default (`own`: `exclude`, `only`, `all`) and hide opportunities without evidence in the chosen view.
+
+**Gate.** Eight yes/no checks, saved with `checked_at` and notes. PASS means:
+
+| Key             | PASS                                                                                       |
+| --------------- | ------------------------------------------------------------------------------------------ |
+| `scope`         | Solo-dev scope: ≤4 weeks, ≤6 screens, ≤3 tables, no native modules                         |
+| `permissions`   | Works within iOS/Android foreground limits; no closed APIs or scraping                     |
+| `single_player` | Valuable to user #1 alone (no marketplace/social)                                          |
+| `monetization`  | One clear paid model; users already pay a competitor or a workaround                       |
+| `demand`        | Competitor ≥1k ratings and ≤3.8★, or ≥15 independent complaints from 2+ sources in 90 days |
+| `distribution`  | The threads/subreddits/keyword where the pain lives allow launching there                  |
+| `data_legal`    | No sensitive PII (medical, financial credentials, minors), no copyrighted ingestion        |
+| `founder_fit`   | You can use it daily yourself                                                              |
+
+Failing `permissions`, `single_player` or `data_legal` is permanent: kill the idea instead of retrying.
+
+**Statuses.** `surfaced → validating → building → shipped → killed`. Killing stores a reason and an optional revisit date; any other status clears both. Killed opportunities are the graveyard: they stay in the list sent to the grouping model, so new labels that mean the same thing map onto them and stay hidden (default view is everything except killed). `record_outcome` stores installs, trial starts and paying customers for shipped ideas; day-60 kill criteria are under 100 installs, under 2% trial starts, or under 1 paying customer per 100 installs.
+
+**Spec.** `generate_spec` sends the 12 strongest quotes (willingness-to-pay signal, then pain) plus the stats, competitors and your notes to the model, and stores Markdown with nine sections: 1 Problem in the users' words (quotes Q1..Qn), 2 Target user and trigger moment, 3 MVP scope (exactly 5 features with Given/When/Then), 4 Non-goals, 5 Data model (Supabase SQL with RLS), 6 Screens and navigation, 7 Monetization, 8 Definition of done, 9 Task plan (tasks ≤2 hours). Default stack: Expo (React Native + TypeScript) + Supabase + RevenueCat + EAS. Agents can also write their own with `save_spec`.
+
+**Import and items.** `/import` and the `import_items` tool store outside text (paste, reddit, support, other) in `items`. A duplicate is the same `source` with the same normalised body (`md5(lower(whitespace-collapsed body))`) and is skipped. Items go through the same classifier as reviews (`analysis_version` 2), then labels are grouped.
+
+**Own apps.** **This is my app** on an app page (`setAppOwn`) marks it as yours; its reviews are left out of opportunity lists and `search_reviews` unless you ask for `own=only`. Google Play is one row per `store_id` (adding a second country is refused, change the review language instead); iOS can be tracked per country.
+
+**Jobs.** `group_labels` maps new labels (queued after a review analysis or item analysis classifies anything, from the opportunities page, and nightly after `sync_all` on the sync cron); `generate_spec` (payload `opportunityId`) is queued by the Generate spec button; `analyse_items` runs after an import; `analyse_all` re-analyses apps classified by an older `ANALYSIS_VERSION`; `fetch_reddit` pulls Reddit posts; `generate_validation` (payload `opportunityId`) writes the validation kit; `embed_labels` embeds labels and refreshes centroids. Every night the sync cron queues `sync_all`, then `fetch_reddit` (when Reddit is enabled), `group_labels`, and `embed_labels` (when embeddings are configured). `pollBatches` runs on the worker's 60-second interval. The MCP server never calls the model itself, it only enqueues these jobs.
+
+#### Providers
+
+`chat()` in `packages/core/src/ai.ts` dispatches on `settings.ai.provider`: `openai` (default) is any OpenAI-compatible `/chat/completions` endpoint (OpenRouter, Ollama, vLLM); `anthropic` uses the Anthropic Messages API with the configured key and model. The system prompt is marked cacheable, but Haiku 4.5 needs a prefix of at least 4096 tokens before caching applies, while Sonnet 5.5 and Opus 5.5 need only 512, so caching mostly helps the larger models.
+
+**Batches.** With `provider = anthropic` and **Use Message Batches** on, classification is asynchronous and about 50% cheaper. `analyseApp` (and item analysis) calls `submitClassificationBatch`, which sends every unclassified row (20 per request, same prompt as the synchronous path) to the Message Batches API and records the batch in `ai_batches` (`provider_batch_id`, `kind` reviews or items, `app_id`, `status` submitted, ended or failed, `payload` mapping each `custom_id` to its row ids). Nothing is submitted while a batch for the same target is still open. The worker calls `pollBatches` every 60 seconds. When a batch has ended, results are applied (evidence quotes re-checked against the stored text), the row is marked `ended` (or `failed` if every request errored), `group_labels` is queued and, for a reviews batch, the app summary is written. Rows the provider could not answer stay unclassified and are retried by the next run.
+
+#### Embeddings
+
+Optional. **Settings → Embeddings** takes any OpenAI-shaped `/embeddings` endpoint (Voyage `https://api.voyageai.com/v1`, OpenAI `https://api.openai.com/v1`); dimensions must be 1024 because the column is `vector(1024)`. Vectors are stored per label in `label_embeddings`, and each opportunity has a `centroid` (mean of its labels). During `group_labels`, an unmapped label whose cosine similarity to an opportunity centroid is at least `autoMapThreshold` (default 0.86) is mapped without asking the model; the rest still go to the model. Because killed opportunities have centroids too, a label that resembles a killed idea maps onto it and stays hidden. `similar_opportunities` (and the Similar list on an opportunity) returns the nearest centroids. The `embed_labels` job embeds new labels and refreshes centroids. Migration 0006 creates the pgvector objects only when the extension is available (guarded by `pg_available_extensions`); without pgvector, or with no embedding base URL, everything else works and similar lists are empty.
+
+#### Scoring weights
+
+`recent × (1 + listingWeight × (listings − 1)) × (1 + painWeight × avg_pain / 5) × (1 + wtpWeight × wtp_share)`. Settings (`settings.score`) and defaults: `listingWeight` 0.5, `painWeight` 1, `wtpWeight` 2, `halfLifeDays` 90 (used in `recent`), `autoMapThreshold` 0.86 (embeddings only). Non-numeric values fall back to the defaults. The formula is in `statsSelect` (SQL) and `opportunityScore()`, both fed from the same settings.
+
+#### Label review
+
+`/review` shows classified reviews and items without a verdict (analysed by the current analyser; rows with a willingness-to-pay signal first, then random). A verdict is `correct` or `wrong` (`review_verdicts`, one per row, recording again replaces it); for `wrong` you can correct `wtp_signal`, `label_kind`, `pain_score` or `label`, and the correction is written through to the review or item row so it changes scores everywhere. Refs are `<app_id>:<review_id>` for reviews and the item id for items. Accuracy is `correct / total`, overall and by analyser version, signal and kind. Buckets use what the model originally returned (`raw_analysis`), so a correction never moves a verdict to another bucket. Aim for about 200 verdicts before trusting the number.
+
+#### Validation kit
+
+`generate_validation` (queued from the Validation tab) has the model write a fake-door kit from the top evidence: headline, bullets, cta, price, a reply for the thread where the pain lives and waitlist copy, stored in `opportunities.validation`. Results go into `validation_metrics`: `waitlist`, `price_clicks`, `replies`, `started_at` and `recorded_at`. Decision rule (`validationDecision`):
+
+- proceed when waitlist ≥ 20 or price clicks ≥ 5 or replies ≥ 3
+- kill when none of those and started ≥ 5 days ago
+- else pending
+
+#### Reddit source
+
+**Settings → Reddit**: `enabled`, `clientId`, `clientSecret`, `userAgent`, `subreddits`, `keywords` and `limit` (posts per search, default 50). Create a **script** app at reddit.com/prefs/apps for the credentials. `fetch_reddit` gets an app-only token, searches each subreddit for each keyword, and imports posts as items with source `reddit` (deduplicated like any import), then queues `analyse_items`. Requests are paced at one per 700 ms and identify themselves with your User-Agent. Policy: the Reddit Data API is for personal, non-commercial use unless Reddit approves otherwise; do not raise the rate or add parallelism.
+
+#### Outcomes view
+
+`/opportunities?view=outcomes` lists shipped and killed opportunities with status, score, gate result, validation decision, installs, trial starts and paying customers.
 
 ### MCP tools
 
@@ -211,6 +320,20 @@ The web app and the MCP server enqueue jobs in the `jobs` table; the worker clai
 | `add_app`                                                   | Add by link or id and queue the first sync           |
 | `sync_app`                                                  | Queue a sync now                                     |
 | `list_boards`, `get_board`, `create_board`, `save_to_board` | Project boards                                       |
+| `list_opportunities`                                        | Opportunities ranked by score, with evidence stats   |
+| `get_opportunity`                                           | One opportunity: quotes, labels, gate, spec, outcome |
+| `search_reviews`                                            | Cross-app search over reviews and imported items     |
+| `save_gate_result`                                          | Record the eight-check validation gate               |
+| `save_spec`                                                 | Store a Markdown build spec on an opportunity        |
+| `set_opportunity_status`                                    | Move status; killing takes a reason and revisit date |
+| `record_outcome`                                            | Record installs, trial starts, paying customers      |
+| `import_items`                                              | Import outside text as evidence (deduplicated)       |
+| `record_verdict`                                            | Mark a classified review/item correct or wrong       |
+| `get_accuracy`                                              | Classifier accuracy from recorded verdicts           |
+| `get_review_queue`                                          | Classified rows with no verdict yet                  |
+| `get_validation`                                            | Validation kit, metrics and decision                 |
+| `save_validation_metrics`                                   | Save fake-door results; returns the decision         |
+| `similar_opportunities`                                     | Nearest opportunities by embeddings                  |
 
 ### Development
 
@@ -218,7 +341,7 @@ Requires Node 22 and pnpm 10.
 
 ```bash
 pnpm install
-docker run -d --name lens-pg -e POSTGRES_PASSWORD=lens -e POSTGRES_DB=lens -p 5433:5432 postgres:16-alpine
+docker run -d --name lens-pg -e POSTGRES_PASSWORD=lens -e POSTGRES_DB=lens -p 5433:5432 pgvector/pgvector:pg16
 export DATABASE_URL=postgres://postgres:lens@localhost:5433/lens MEDIA_DIR=./data/media MCP_TOKEN=dev-token-0123456789abcdefgh
 pnpm migrate && pnpm seed
 pnpm dev:web      # http://localhost:3000

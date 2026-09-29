@@ -174,6 +174,7 @@ await migrate(() => {})
 const sql = db()
 if (process.argv.includes("--reset") || process.argv.includes("--remove")) {
   for (const a of await sql<{ id: string }[]>`select id from apps where store_id like 'demo.%'`) await removeApp(a.id)
+  await sql`delete from opportunities where label like 'Demo:%'`
   await sql`delete from boards where name = 'Meditation app · Onboarding' and not exists (select 1 from board_items i where i.board_id = boards.id)`
 }
 if (process.argv.includes("--remove")) {
@@ -237,5 +238,28 @@ if (!count) {
   for (const s of shots)
     await sql`insert into board_items (board_id, kind, app_id, screenshot_id, note) values (${b.id}, 'screenshot', ${s.app_id}, ${s.id}, null)`
   console.log("seeded demo board")
+}
+
+// One demo opportunity with two mapped labels, so the opportunity views have content before an AI provider is configured.
+const [{ opps }] = await sql<{ opps: number }[]>`select count(*)::int as opps from opportunities where label like 'Demo:%'`
+if (!opps) {
+  const picked = await sql<{ app_id: string; review_id: string }[]>`
+    select r.app_id, r.review_id from reviews r join apps a on a.id = r.app_id
+    where a.store_id like 'demo.%' and r.label is null and r.body is not null and r.body <> ''
+    order by r.rating, r.reviewed_at desc, r.review_id limit 8`
+  if (picked.length >= 2) {
+    const labels = ["paywall before trying content", "no free trial to test the app"]
+    const rows = picked.map((p, i) => ({ ...p, label: labels[i % 2] }))
+    await sql`
+      update reviews r set label = v.label, label_kind = 'complaint', evidence_span = left(r.body, 120),
+        wtp_signal = case when v.i % 3 = 0 then 'churned' else 'none' end, pain_score = 4, analysed_at = coalesce(r.analysed_at, now()), analysis_version = 2
+      from unnest(${rows.map((r) => r.app_id)}::uuid[], ${rows.map((r) => r.review_id)}::text[], ${rows.map((r) => r.label)}::text[],
+        ${rows.map((_, i) => i)}::int[]) as v(app_id, review_id, label, i)
+      where r.app_id = v.app_id and r.review_id = v.review_id`
+    const [o] = await sql<{ id: number }[]>`
+      insert into opportunities (label, kind) values ('Demo: try before you pay — meditation apps', 'complaint') returning id::int`
+    await sql`insert into opportunity_labels (label, opportunity_id) select unnest(${labels}::text[]), ${o.id} on conflict (label) do nothing`
+    console.log("seeded demo opportunity")
+  }
 }
 await closeDb()

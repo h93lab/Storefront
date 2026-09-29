@@ -14,20 +14,26 @@ const TITLES: [string, string][] = [
   ["/apps", "Library"],
   ["/boards/", "Board"],
   ["/boards", "Boards"],
+  ["/opportunities/", "Opportunity"],
+  ["/opportunities", "Opportunities"],
+  ["/import", "Import"],
+  ["/review", "Review"],
   ["/compare", "Compare"],
   ["/changes", "Changes"],
   ["/settings", "Settings"],
 ]
 
-export function SiteHeader({ apps }: { apps: CommandApp[] }) {
+export function SiteHeader({ apps, reviewCount }: { apps: CommandApp[]; reviewCount: number }) {
   const pathname = usePathname()
   const title = pathname === "/" ? "Dashboard" : (TITLES.find(([p]) => pathname.startsWith(p))?.[1] ?? "")
   // Detail pages get a back link to their list instead of a generic label.
   const parent = pathname.startsWith("/apps/")
     ? { href: "/apps", label: "Library" }
-    : pathname.startsWith("/boards/")
-      ? { href: "/boards", label: "Boards" }
-      : null
+    : pathname.startsWith("/opportunities/")
+      ? { href: "/opportunities", label: "Opportunities" }
+      : pathname.startsWith("/boards/")
+        ? { href: "/boards", label: "Boards" }
+        : null
   return (
     <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <SidebarTrigger className="-ml-1" />
@@ -44,7 +50,7 @@ export function SiteHeader({ apps }: { apps: CommandApp[] }) {
         <span className="truncate text-sm font-medium">{title}</span>
       )}
       <div className="ml-auto flex items-center gap-2">
-        <CommandMenu apps={apps} />
+        <CommandMenu apps={apps} reviewCount={reviewCount} />
         <ThemeToggle />
         <AddAppDialog />
       </div>

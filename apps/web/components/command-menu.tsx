@@ -3,7 +3,20 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { useTheme } from "next-themes"
-import { Bookmark, GitCompare, History, LayoutDashboard, Library, Moon, RefreshCw, Search, Settings } from "lucide-react"
+import {
+  Bookmark,
+  ClipboardPaste,
+  GitCompare,
+  History,
+  LayoutDashboard,
+  Lightbulb,
+  Library,
+  ListChecks,
+  Moon,
+  RefreshCw,
+  Search,
+  Settings,
+} from "lucide-react"
 import { toast } from "sonner"
 import { syncAllAction } from "@/app/actions"
 import { AppIcon } from "@/components/app-icon"
@@ -28,7 +41,7 @@ export interface CommandApp {
   icon: string | null
 }
 
-export function CommandMenu({ apps }: { apps: CommandApp[] }) {
+export function CommandMenu({ apps, reviewCount }: { apps: CommandApp[]; reviewCount: number }) {
   const [open, setOpen] = React.useState(false)
   const router = useRouter()
   const { resolvedTheme, setTheme } = useTheme()
@@ -83,6 +96,9 @@ export function CommandMenu({ apps }: { apps: CommandApp[] }) {
               ["/", "Dashboard", LayoutDashboard],
               ["/apps", "Library", Library],
               ["/boards", "Boards", Bookmark],
+              ["/opportunities", "Opportunities", Lightbulb],
+              ["/import", "Import", ClipboardPaste],
+              ["/review", "Review", ListChecks],
               ["/compare", "Compare", GitCompare],
               ["/changes", "Changes", History],
               ["/settings", "Settings", Settings],
@@ -92,6 +108,7 @@ export function CommandMenu({ apps }: { apps: CommandApp[] }) {
                 <CommandItem key={href as string} onSelect={() => go(() => router.push(href as string))}>
                   <I />
                   {label as string}
+                  {href === "/review" && <CommandShortcut>{reviewCount}</CommandShortcut>}
                 </CommandItem>
               )
             })}

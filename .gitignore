@@ -11,3 +11,5 @@ test-results
 tsconfig.tsbuildinfo
 next-env.d.ts
 backups/
+apps/web/AGENTS.md
+apps/web/CLAUDE.md

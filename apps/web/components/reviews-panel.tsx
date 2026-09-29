@@ -21,6 +21,17 @@ export interface ReviewRow {
   sentiment: string | null
   topic: string | null
   label: string | null
+  wtp_signal?: string | null
+  competitor_mentioned?: string | null
+  workaround?: string | null
+  evidence_span?: string | null
+}
+
+const SIGNAL: Record<string, string> = {
+  paying_competitor: "Pays for a competitor",
+  churned: "Churned",
+  workaround: "Has a workaround",
+  stated_wtp: "Would pay",
 }
 
 export function Stars({ rating }: { rating: number | null }) {
@@ -140,6 +151,12 @@ export function ReviewsPanel({
                 {r.label && (
                   <Badge variant="outline" className="font-normal text-muted-foreground">
                     {r.label}
+                  </Badge>
+                )}
+                {r.wtp_signal && SIGNAL[r.wtp_signal] && (
+                  <Badge variant="secondary" className="bg-warning/15 text-warning" title={r.workaround ?? undefined}>
+                    {SIGNAL[r.wtp_signal]}
+                    {r.competitor_mentioned ? `: ${r.competitor_mentioned}` : ""}
                   </Badge>
                 )}
               </div>

@@ -52,6 +52,11 @@ export async function addApp(input: AddAppInput) {
   const lang = (input.lang || defaultLang(country)).toLowerCase()
   if (!/^[a-z]{2}$/.test(country)) throw new Error("Country must be a two-letter code such as US or EG")
   const sql = db()
+  if (input.store === "android") {
+    const [other] = await sql<{ id: string }[]>`
+      select id from apps where store = 'android' and store_id = ${input.storeId} and country <> ${country} limit 1`
+    if (other) throw new Error("Google Play reviews are not per country. This app is already tracked; change its review language instead.")
+  }
   const [row] = await sql<{ id: string; created: boolean }[]>`
     insert into apps (store, store_id, country, lang) values (${input.store}, ${input.storeId}, ${country}, ${lang})
     on conflict (store, store_id, country) do update set lang = excluded.lang
@@ -65,4 +70,10 @@ export async function removeApp(id: string) {
   if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("Invalid app id")
   await db()`delete from apps where id = ${id}`
   await fs.rm(path.join(env.mediaDir, id), { recursive: true, force: true })
+}
+
+/** Marks an app as the user's own shipped app; its evidence is excluded from opportunity lists by default. */
+export async function setAppOwn(id: string, own: boolean) {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("Invalid app id")
+  await db()`update apps set own = ${own} where id = ${id}`
 }

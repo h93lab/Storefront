@@ -14,13 +14,32 @@ export interface WatchedJob {
   run_after: string
 }
 
-const LABEL: Record<string, string> = { sync_app: "Syncing", sync_all: "Queuing all apps", analyse_app: "Analysing reviews" }
+const LABEL: Record<string, string> = {
+  sync_app: "Syncing",
+  sync_all: "Queuing all apps",
+  analyse_app: "Analysing reviews",
+  analyse_items: "Analysing imported items",
+  group_labels: "Grouping labels",
+  generate_spec: "Writing the spec",
+  generate_validation: "Writing the validation kit",
+  fetch_reddit: "Fetching Reddit posts",
+}
 
 /**
  * Polls a light endpoint while jobs are active and refreshes the page once
  * one finishes, so the page shows progress without re-rendering every few seconds.
  */
-export function JobWatcher({ appId, initial, variant = "banner" }: { appId?: string; initial: WatchedJob[]; variant?: "banner" | "none" }) {
+export function JobWatcher({
+  appId,
+  opportunityId,
+  initial,
+  variant = "banner",
+}: {
+  appId?: string
+  opportunityId?: number
+  initial: WatchedJob[]
+  variant?: "banner" | "none"
+}) {
   const router = useRouter()
   const [jobs, setJobs] = React.useState(initial)
   const key = initial.map((j) => j.id).join(",")
@@ -32,7 +51,9 @@ export function JobWatcher({ appId, initial, variant = "banner" }: { appId?: str
     let known = new Set(initial.map((j) => j.id))
     const tick = async () => {
       try {
-        const res = await fetch(`/api/jobs${appId ? `?app=${appId}` : ""}`, { cache: "no-store" })
+        const res = await fetch(`/api/jobs${appId ? `?app=${appId}` : opportunityId ? `?opportunity=${opportunityId}` : ""}`, {
+          cache: "no-store",
+        })
         if (!res.ok || stopped) return
         const { jobs: next } = (await res.json()) as { jobs: WatchedJob[] }
         setJobs(next)
@@ -49,7 +70,7 @@ export function JobWatcher({ appId, initial, variant = "banner" }: { appId?: str
       clearInterval(t)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, appId])
+  }, [key, appId, opportunityId])
 
   if (variant === "none" || !jobs.length) return null
   const running = jobs.find((j) => j.status === "running")

@@ -60,7 +60,7 @@ services:
     depends_on: [web, mcp]
 
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     profiles: [localdb]
     restart: unless-stopped
     environment:

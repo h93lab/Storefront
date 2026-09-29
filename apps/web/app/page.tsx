@@ -1,6 +1,6 @@
 import Link from "next/link"
 import { ChevronRight, CircleCheck, CircleX, LoaderCircle } from "lucide-react"
-import { activeJobs, dashboardStats, getChanges, recentJobs } from "@lens/core"
+import { accuracyStats, activeJobs, dashboardStats, getChanges, recentJobs } from "@lens/core"
 import { AppIcon } from "@/components/app-icon"
 import { JobWatcher } from "@/components/job-watcher"
 import { ReviewsPerDayChart } from "@/components/charts"
@@ -18,7 +18,13 @@ import { AddAppDialog } from "@/components/add-app-dialog"
 const JOB_LABEL: Record<string, string> = { sync_app: "Sync app", sync_all: "Sync all apps", analyse_app: "Analyse reviews" }
 
 export default async function DashboardPage() {
-  const [stats, changes, jobs, active] = await Promise.all([dashboardStats(), getChanges({ limit: 6 }), recentJobs(8), activeJobs()])
+  const [stats, changes, jobs, active, accuracy] = await Promise.all([
+    dashboardStats(),
+    getChanges({ limit: 6 }),
+    recentJobs(8),
+    activeJobs(),
+    accuracyStats(),
+  ])
   const busy = active.length > 0
 
   if (!stats.apps) {
@@ -73,6 +79,22 @@ export default async function DashboardPage() {
           value={negShare == null ? "—" : `${negShare}%`}
           hint={negShare == null ? "Needs AI analysis (Settings)" : `Across ${sentimentTotal.toLocaleString()} analysed reviews`}
         />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
+        <Link href="/opportunities" className="rounded-xl outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          <StatCard label="Opportunities surfaced" value={stats.opportunities} hint="Open the ranked list" />
+        </Link>
+        <Link href="/opportunities" className="rounded-xl outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          <StatCard label="WTP signals · 30d" value={stats.signals.toLocaleString()} hint="Willingness-to-pay mentions" />
+        </Link>
+        <Link href="/review" className="rounded-xl outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          <StatCard
+            label="Review accuracy"
+            value={accuracy.total ? `${Math.round(accuracy.accuracy * 100)}%` : "—"}
+            hint={accuracy.total ? `${accuracy.total} verdicts. Open label review` : "No verdicts yet. Start reviewing"}
+          />
+        </Link>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">

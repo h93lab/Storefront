@@ -2,21 +2,32 @@ import { Cron } from "croner"
 import {
   aiConfigured,
   analyseApp,
+  analyseItems,
   claimJob,
   closeDb,
   db,
+  embedLabels,
+  embeddingConfigured,
   enqueue,
   env,
   failJob,
+  fetchReddit,
   finishJob,
+  generateSpec,
+  generateValidation,
   getInsights,
   getSettings,
+  groupLabels,
   isTransient,
   MAX_ATTEMPTS,
+  pollBatches,
+  queueReanalysis,
+  recomputeCentroids,
   requeueStale,
   retryJob,
   setJobProgress,
   syncApp,
+  unanalysedCount,
   waitForDb,
   type Job,
 } from "@lens/core"
@@ -30,6 +41,23 @@ const log = (msg: string, extra?: Record<string, unknown>) => console.log(JSON.s
 let stopping = false
 let schedule: Cron | null = null
 let scheduleExpr = ""
+let polling = false
+
+/** Checks submitted Message Batches; skipped while a previous check is still running. */
+async function pollBatchesOnce() {
+  if (polling) return
+  polling = true
+  try {
+    const { ai } = await getSettings()
+    if (ai.provider !== "anthropic" || !ai.batch) return
+    await pollBatches({ log: (m) => log(m, { source: "poll_batches" }) })
+    log("batches polled")
+  } catch (e) {
+    log("batch poll failed", { error: e instanceof Error ? e.message : String(e) })
+  } finally {
+    polling = false
+  }
+}
 
 /** Writes progress to the job row at most once a second, so the UI can show it. */
 function progressWriter(jobId: string) {
@@ -64,7 +92,8 @@ async function run(job: Job, signal: AbortSignal): Promise<string> {
     case "sync_app": {
       const r = await syncApp(appId, { log: (m) => log(m, { job: job.id, appId }), onProgress, signal })
       const settings = await getSettings()
-      if (aiConfigured(settings) && settings.ai.autoAnalyse && (r.newReviews > 0 || !(await getInsights(appId)))) {
+      // New reviews, reviews classified by an older analyser, or no insights yet all warrant a run.
+      if (aiConfigured(settings) && settings.ai.autoAnalyse && ((await unanalysedCount(appId)) > 0 || !(await getInsights(appId)))) {
         await enqueue("analyse_app", { appId })
       }
       const parts = [
@@ -79,6 +108,37 @@ async function run(job: Job, signal: AbortSignal): Promise<string> {
     case "analyse_app": {
       const r = await analyseApp(appId, { log: (m) => log(m, { job: job.id, appId }), onProgress, signal })
       return `${r.classified} reviews classified · insights from ${r.reviewsCount} reviews`
+    }
+    case "analyse_all": {
+      const n = await queueReanalysis()
+      return `Queued analysis for ${n} app${n === 1 ? "" : "s"}`
+    }
+    case "group_labels": {
+      const r = await groupLabels({ log: (m) => log(m, { job: job.id }), onProgress, signal })
+      return `${r.mapped} labels mapped to existing opportunities · ${r.created} new opportunities`
+    }
+    case "generate_spec": {
+      const opportunityId = String(job.payload.opportunityId ?? "")
+      const md = await generateSpec(opportunityId, { log: (m) => log(m, { job: job.id, opportunityId }), onProgress, signal })
+      return `Spec written for opportunity ${opportunityId} (${md.length} chars)`
+    }
+    case "analyse_items": {
+      const r = await analyseItems({ log: (m) => log(m, { job: job.id }), onProgress, signal })
+      return `${r.classified} imported items classified`
+    }
+    case "fetch_reddit": {
+      const r = await fetchReddit({ log: (m) => log(m, { job: job.id }), onProgress, signal })
+      return `${r.fetched} Reddit posts fetched · ${r.inserted} new · ${r.skipped} skipped`
+    }
+    case "generate_validation": {
+      const opportunityId = String(job.payload.opportunityId ?? "")
+      const kit = await generateValidation(opportunityId, { log: (m) => log(m, { job: job.id, opportunityId }), onProgress, signal })
+      return `Validation kit written for opportunity ${opportunityId}: ${kit.headline}`
+    }
+    case "embed_labels": {
+      const r = await embedLabels({ log: (m) => log(m, { job: job.id }), signal })
+      const centroids = await recomputeCentroids()
+      return `${r.embedded} labels embedded · ${centroids} opportunity centroids updated`
     }
     default:
       throw new Error(`Unknown job type ${job.type}`)
@@ -148,6 +208,10 @@ async function refreshSchedule() {
       async () => {
         log("scheduled sync")
         await enqueue("sync_all")
+        const settings = await getSettings()
+        if (settings.reddit.enabled) await enqueue("fetch_reddit")
+        await enqueue("group_labels")
+        if (embeddingConfigured(settings)) await enqueue("embed_labels")
       },
     )
     scheduleExpr = sync.cron
@@ -168,6 +232,7 @@ async function main() {
   const timer = setInterval(() => {
     refreshSchedule()
     heartbeat()
+    void pollBatchesOnce()
     requeueStale(30).catch((e) => log("requeue check failed", { error: String(e) }))
   }, 60_000)
   const shutdown = async () => {

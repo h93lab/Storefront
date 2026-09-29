@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import {
+  accuracyStats,
   addApp,
   addBoardItem,
   compareApps,
@@ -13,14 +14,31 @@ import {
   getInsights,
   getReviews,
   getScreenshot,
+  getOpportunity,
   getScreenshots,
+  importItems,
   listApps,
+  listOpportunities,
   listBoards,
+  GATE_KEYS,
+  OPPORTUNITY_STATUSES,
   parseStoreUrl,
+  recordOutcome,
+  recordVerdict,
+  reviewQueue,
+  saveValidationMetrics,
+  similarOpportunities,
+  validationDecision,
   resolveMediaPath,
+  saveGate,
+  saveSpec,
+  searchEvidence,
+  setOpportunityStatus,
+  signalCounts,
   storeClient,
   topicCounts,
   TOPICS,
+  WTP_SIGNALS,
 } from "@lens/core"
 import { z } from "zod"
 
@@ -173,11 +191,15 @@ export function buildServer() {
     "get_reviews",
     {
       title: "Get reviews",
-      description: `Stored store reviews, newest first by default. Topics come from the AI pass: ${TOPICS.join(", ")}.`,
+      description: `Stored store reviews, newest first by default. Topics come from the AI pass: ${TOPICS.join(", ")}. Each analysed review also carries a willingness-to-pay signal (${WTP_SIGNALS.join(", ")}), any competitor named, a workaround described, a verbatim evidence quote and a pain score 0-5.`,
       inputSchema: {
         app_id: uuid,
         rating: z.enum(["all", "pos", "neu", "neg"]).optional().describe("pos = 4-5 stars, neu = 3, neg = 1-2"),
         topic: z.string().optional(),
+        signal: z
+          .enum(["any", ...WTP_SIGNALS])
+          .optional()
+          .describe("Only reviews with this willingness-to-pay signal; any = every signal except none"),
         query: z.string().optional().describe("Text search in title and body"),
         sort: z.enum(["new", "low", "high"]).optional(),
         limit: z.number().int().min(1).max(200).optional(),
@@ -185,12 +207,17 @@ export function buildServer() {
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ app_id, rating, topic, query, sort, limit, offset }) => {
-      const { rows, total } = await getReviews(app_id, { rating, topic, q: query, sort, limit: limit ?? 50, offset })
+    async ({ app_id, rating, topic, signal, query, sort, limit, offset }) => {
+      const [{ rows, total }, topics, signals] = await Promise.all([
+        getReviews(app_id, { rating, topic, signal, q: query, sort, limit: limit ?? 50, offset }),
+        topicCounts(app_id),
+        signalCounts(app_id),
+      ])
       return json({
         total,
         returned: rows.length,
-        topics: await topicCounts(app_id),
+        topics,
+        signals,
         reviews: rows.map((r) => ({
           review_id: r.review_id,
           rating: r.rating,
@@ -201,6 +228,11 @@ export function buildServer() {
           sentiment: r.sentiment,
           topic: r.topic,
           label: r.label,
+          wtp_signal: r.wtp_signal,
+          competitor: r.competitor_mentioned,
+          workaround: r.workaround,
+          evidence: r.evidence_span,
+          pain: r.pain_score,
         })),
       })
     },
@@ -441,6 +473,294 @@ export function buildServer() {
         return fail((e as Error).message)
       }
     },
+  )
+
+  const oppId = z.number().int().min(1).describe("Opportunity id from list_opportunities")
+  const oppLink = (id: number) => `${env.publicUrl}/opportunities/${id}`
+  const notFound = (id: number) => fail(`No opportunity with id ${id}. Use list_opportunities to find ids.`)
+  /** Runs a core mutation and turns its validation errors into tool errors. */
+  const attempt = async (fn: () => Promise<unknown>) => {
+    try {
+      return json(await fn())
+    } catch (e) {
+      return fail((e as Error).message)
+    }
+  }
+
+  server.registerTool(
+    "list_opportunities",
+    {
+      title: "List opportunities",
+      description:
+        "Product opportunities ranked by score: recurring complaints and feature requests mined from reviews and imported items, " +
+        "grouped across apps. Each row has a kind (complaint or request), status, evidence count, number of app listings, " +
+        "average pain 0-5, willingness-to-pay signal counts, named competitors, last seen date and a score. " +
+        "By default killed opportunities are hidden and competitor apps only (own apps excluded). Use get_opportunity for the evidence.",
+      inputSchema: {
+        status: z
+          .enum(["active", "all", ...OPPORTUNITY_STATUSES])
+          .optional()
+          .describe("active (default) = everything except killed"),
+        kind: z.enum(["complaint", "request"]).optional(),
+        own: z.enum(["exclude", "only", "all"]).optional().describe("exclude (default) = competitors only, only = my own apps' feedback"),
+        query: z.string().optional().describe("Matches label and notes"),
+        limit: z.number().int().min(1).max(200).optional().describe("Default 50"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ status, kind, own, query, limit }) => {
+      const rows = await listOpportunities({ status, kind, own, q: query })
+      return json(rows.slice(0, limit ?? 50).map((o) => ({ ...o, url: oppLink(o.id) })))
+    },
+  )
+
+  server.registerTool(
+    "get_opportunity",
+    {
+      title: "Get opportunity",
+      description:
+        "One opportunity with its statistics, the review and imported-item evidence behind it (verbatim quote, app, store, country, " +
+        "rating, willingness-to-pay signal, competitor, workaround, pain), the grouped labels, the validation gate, spec, outcome and status.",
+      inputSchema: { opportunity_id: oppId, limit: z.number().int().min(1).max(200).optional().describe("Max evidence rows, default 50") },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ opportunity_id, limit }) => {
+      const o = await getOpportunity(opportunity_id)
+      if (!o) return notFound(opportunity_id)
+      return json({ ...o, evidence_total: o.n, evidence: o.evidence.slice(0, limit ?? 50), url: oppLink(o.id) })
+    },
+  )
+
+  server.registerTool(
+    "search_reviews",
+    {
+      title: "Search reviews and items",
+      description:
+        `Cross-app evidence search over stored reviews and imported items (forum posts, support tickets). Each hit carries the AI label, ` +
+        `willingness-to-pay signal (${WTP_SIGNALS.join(", ")}; any = every signal except none), competitor, workaround, evidence quote and pain 0-5. ` +
+        "Only analysed rows have signals and labels. Own apps are excluded.",
+      inputSchema: {
+        query: z.string().optional().describe("Text search in title, body and evidence quote"),
+        signal: z.enum(["any", ...WTP_SIGNALS]).optional(),
+        label: z.string().optional().describe("Substring of the AI label"),
+        min_pain: z.number().int().min(0).max(5).optional(),
+        limit: z.number().int().min(1).max(200).optional().describe("Default 50"),
+        offset: z.number().int().min(0).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ query, signal, label, min_pain, limit, offset }) => {
+      const { rows, total } = await searchEvidence({ q: query, signal, label, minPain: min_pain, limit: limit ?? 50, offset })
+      return json({ total, returned: rows.length, evidence: rows })
+    },
+  )
+
+  server.registerTool(
+    "save_gate_result",
+    {
+      title: "Save gate result",
+      description:
+        "Record the founder validation gate for an opportunity: eight yes/no checks (true = pass). Failing permissions, single_player or " +
+        "data_legal is permanent: the idea should be killed, not retried. Unknown check names are rejected. Replaces the previous gate result.",
+      inputSchema: {
+        opportunity_id: oppId,
+        checks: z.record(z.string(), z.boolean()).describe(`Keys: ${GATE_KEYS.join(", ")}`),
+        notes: z.string().max(4000).optional(),
+      },
+    },
+    async ({ opportunity_id, checks, notes }) => attempt(() => saveGate(opportunity_id, { checks, notes })),
+  )
+
+  server.registerTool(
+    "save_spec",
+    {
+      title: "Save spec",
+      description:
+        "Store a build spec (Markdown) on an opportunity, replacing any existing spec. It is shown on the opportunity's Spec tab.",
+      inputSchema: { opportunity_id: oppId, spec_md: z.string().min(1).max(100_000) },
+    },
+    async ({ opportunity_id, spec_md }) => attempt(async () => (await saveSpec(opportunity_id, spec_md), { saved: true })),
+  )
+
+  server.registerTool(
+    "set_opportunity_status",
+    {
+      title: "Set opportunity status",
+      description:
+        `Move an opportunity through its lifecycle (${OPPORTUNITY_STATUSES.join(" > ")}). Killing it records the reason and an optional ` +
+        "date to revisit; any other status clears them. Grouping keeps mapping duplicate labels onto killed opportunities.",
+      inputSchema: {
+        opportunity_id: oppId,
+        status: z.enum(OPPORTUNITY_STATUSES),
+        reason: z.string().max(1000).optional().describe("Why it was killed"),
+        revisit_after: z.string().optional().describe("ISO date to look at a killed idea again"),
+      },
+    },
+    async ({ opportunity_id, status, reason, revisit_after }) =>
+      attempt(async () => (await setOpportunityStatus(opportunity_id, status, { reason, revisitAfter: revisit_after }), { status })),
+  )
+
+  server.registerTool(
+    "record_outcome",
+    {
+      title: "Record outcome",
+      description:
+        "Record real-world results of a shipped opportunity. Kill criteria at day 60: fewer than 100 installs, under 2% trial starts, " +
+        "or fewer than 1 paying customer per 100 installs.",
+      inputSchema: {
+        opportunity_id: oppId,
+        installs: z.number().int().min(0).optional(),
+        trial_starts: z.number().int().min(0).optional(),
+        paying: z.number().int().min(0).optional(),
+        notes: z.string().max(4000).optional(),
+      },
+    },
+    async ({ opportunity_id, installs, trial_starts, paying, notes }) =>
+      attempt(() => recordOutcome(opportunity_id, { installs, trial_starts, paying, notes })),
+  )
+
+  server.registerTool(
+    "import_items",
+    {
+      title: "Import items",
+      description:
+        "Import text from outside the stores (Reddit threads, support tickets, forum posts) as evidence. Duplicates are skipped. " +
+        "Analysis and grouping are queued in the background, so new items appear in opportunities after a minute or two.",
+      inputSchema: {
+        items: z
+          .array(
+            z.object({
+              body: z.string().min(1).max(8000),
+              url: z.string().optional(),
+              author: z.string().optional(),
+              app_id: uuid.optional().describe("Library app this text is about"),
+              source: z.string().max(40).optional().describe("paste (default), reddit, support or other"),
+              posted_at: z.string().optional().describe("ISO date"),
+            }),
+          )
+          .min(1)
+          .max(200),
+      },
+    },
+    async ({ items }) => {
+      try {
+        const r = await importItems(
+          items.map((i) => ({ body: i.body, url: i.url, author: i.author, appId: i.app_id, source: i.source, postedAt: i.posted_at })),
+        )
+        if (r.inserted > 0) await enqueue("analyse_items")
+        return json(r)
+      } catch (e) {
+        return fail((e as Error).message)
+      }
+    },
+  )
+
+  server.registerTool(
+    "record_verdict",
+    {
+      title: "Record label verdict",
+      description:
+        "Record whether the model's classification of one review or imported item was right. source 'review' uses ref '<app_id>:<review_id>' " +
+        "and source 'item' uses the item id, both as given by get_review_queue. verdict is 'correct' or 'wrong'; for 'wrong', pass corrected " +
+        "with any of wtp_signal, label_kind (complaint|request|praise|other), pain_score (1-5) and label. Verdicts feed get_accuracy.",
+      inputSchema: {
+        source: z.enum(["review", "item"]),
+        ref: z.string().min(1).max(200),
+        verdict: z.enum(["correct", "wrong"]),
+        corrected: z
+          .object({
+            wtp_signal: z.enum(WTP_SIGNALS).optional(),
+            label_kind: z.enum(["complaint", "request", "praise", "other"]).optional(),
+            pain_score: z.number().int().min(1).max(5).optional(),
+            label: z.string().min(1).max(200).optional(),
+          })
+          .optional(),
+        notes: z.string().max(2000).optional(),
+      },
+    },
+    async ({ source, ref, verdict, corrected, notes }) => attempt(() => recordVerdict({ source, ref, verdict, corrected, notes })),
+  )
+
+  server.registerTool(
+    "get_accuracy",
+    {
+      title: "Get label accuracy",
+      description: "Accuracy of the model's review labels measured from recorded verdicts: overall and per willingness-to-pay signal.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () => attempt(() => accuracyStats()),
+  )
+
+  server.registerTool(
+    "get_review_queue",
+    {
+      title: "Get review queue",
+      description:
+        "Classified reviews and items that have no verdict yet, with the model's label, kind, signal and pain, for checking with record_verdict. " +
+        "Each row has source and ref.",
+      inputSchema: {
+        limit: z.number().int().min(1).max(100).optional().describe("Default 20"),
+        only_signals: z.boolean().optional().describe("Only rows with a willingness-to-pay signal"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ limit, only_signals }) => attempt(() => reviewQueue({ limit, onlySignals: only_signals })),
+  )
+
+  server.registerTool(
+    "get_validation",
+    {
+      title: "Get validation",
+      description:
+        "The fake-door validation kit (headline, bullets, cta, price, thread reply, waitlist copy; null until generated in the web app), " +
+        "the recorded metrics and the decision. Decision rule: 'proceed' when waitlist >= 20 or price_clicks >= 5 or replies >= 3; " +
+        "'kill' when none of those and started_at is at least 5 days ago; otherwise 'pending'.",
+      inputSchema: { opportunity_id: oppId },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ opportunity_id }) => {
+      const o = await getOpportunity(opportunity_id)
+      if (!o) return notFound(opportunity_id)
+      return json({
+        opportunity_id: o.id,
+        kit: o.validation,
+        metrics: o.validation_metrics,
+        decision: validationDecision(o.validation_metrics),
+        url: oppLink(o.id),
+      })
+    },
+  )
+
+  server.registerTool(
+    "save_validation_metrics",
+    {
+      title: "Save validation metrics",
+      description:
+        "Save the results of a fake-door test, replacing earlier metrics. Omitted counts are stored as 0. Returns the decision: " +
+        "'proceed' when waitlist >= 20 or price_clicks >= 5 or replies >= 3; 'kill' when none of those and started_at is at least 5 days ago; else 'pending'.",
+      inputSchema: {
+        opportunity_id: oppId,
+        waitlist: z.number().int().min(0).optional().describe("Waitlist sign-ups"),
+        price_clicks: z.number().int().min(0).optional().describe("Clicks on the price / trial button"),
+        replies: z.number().int().min(0).optional().describe("Positive replies to the thread post"),
+        started_at: z.string().optional().describe("ISO date the test went live"),
+      },
+    },
+    async ({ opportunity_id, waitlist, price_clicks, replies, started_at }) =>
+      attempt(() => saveValidationMetrics(opportunity_id, { waitlist, price_clicks, replies, started_at })),
+  )
+
+  server.registerTool(
+    "similar_opportunities",
+    {
+      title: "Similar opportunities",
+      description:
+        "Opportunities whose evidence is semantically close to this one (embeddings). Returns [] when embeddings are not configured.",
+      inputSchema: { opportunity_id: oppId },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ opportunity_id }) => attempt(() => similarOpportunities(opportunity_id)),
   )
 
   return server

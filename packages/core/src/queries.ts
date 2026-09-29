@@ -1,3 +1,4 @@
+import { ANALYSIS_VERSION } from "./analysis"
 import { db } from "./db"
 import type { Store } from "./stores"
 
@@ -16,6 +17,7 @@ export interface AppSummary {
   version: string | null
   icon_path: string | null
   status: "pending" | "syncing" | "ready" | "error"
+  own: boolean
   last_error: string | null
   last_synced_at: Date | null
   created_at: Date
@@ -40,7 +42,7 @@ export interface AppDetail extends AppSummary {
 const appCols = (sql = db()) => sql`
   a.id, a.store, a.store_id, a.country, a.lang, a.name, a.developer, a.category,
   a.rating::float8 as rating, a.ratings_count::float8 as ratings_count, a.price, a.version, a.icon_path,
-  a.status, a.last_error, a.last_synced_at, a.created_at,
+  a.status, a.last_error, a.last_synced_at, a.created_at, a.own,
   coalesce((select array_agg(path order by position) from (
     select path, position from screenshots s where s.app_id = a.id and s.active and s.device = 'phone' order by position limit 3) p), '{}') as preview,
   (select field from changes c where c.app_id = a.id and c.detected_at > now() - interval '7 days' order by detected_at desc limit 1) as recent_change`
@@ -135,7 +137,15 @@ export interface Review {
   topic: string | null
   label: string | null
   label_kind: string | null
+  wtp_signal: string | null
+  competitor_mentioned: string | null
+  workaround: string | null
+  evidence_span: string | null
+  pain_score: number | null
 }
+
+const REVIEW_COLS = `app_id, review_id, author, rating, title, body, app_version, reviewed_at, sentiment, topic, label, label_kind,
+  wtp_signal, competitor_mentioned, workaround, evidence_span, pain_score`
 
 export type RatingFilter = "all" | "pos" | "neu" | "neg"
 export interface ReviewQuery {
@@ -143,6 +153,8 @@ export interface ReviewQuery {
   q?: string
   topic?: string | null
   sentiment?: string | null
+  /** A wtp_signal value, or "any" for every review with a signal other than none. */
+  signal?: string | null
   sort?: "new" | "low" | "high"
   limit?: number
   offset?: number
@@ -152,12 +164,14 @@ export async function getReviews(appId: string, f: ReviewQuery = {}) {
   const sql = db()
   const q = f.q?.trim() ? `%${f.q.trim()}%` : null
   const rating = f.rating ?? "all"
+  const signal = f.signal ?? null
   const where = sql`
     app_id = ${appId}
     and (${rating} = 'all' or (${rating} = 'pos' and rating >= 4) or (${rating} = 'neu' and rating = 3) or (${rating} = 'neg' and rating <= 2))
     and (${q}::text is null or title ilike ${q} or body ilike ${q})
     and (${f.topic ?? null}::text is null or topic = ${f.topic ?? ""})
-    and (${f.sentiment ?? null}::text is null or sentiment = ${f.sentiment ?? ""})`
+    and (${f.sentiment ?? null}::text is null or sentiment = ${f.sentiment ?? ""})
+    and (${signal}::text is null or (${signal} = 'any' and wtp_signal is not null and wtp_signal <> 'none') or wtp_signal = ${signal ?? ""})`
   const order =
     f.sort === "low"
       ? sql`rating asc nulls last, reviewed_at desc`
@@ -167,7 +181,7 @@ export async function getReviews(appId: string, f: ReviewQuery = {}) {
   const limit = Math.min(Math.max(f.limit ?? 50, 1), 500)
   const [rows, [{ total }]] = await Promise.all([
     sql<Review[]>`
-      select app_id, review_id, author, rating, title, body, app_version, reviewed_at, sentiment, topic, label, label_kind
+      select ${sql.unsafe(REVIEW_COLS)}
       from reviews where ${where} order by ${order} limit ${limit} offset ${f.offset ?? 0}`,
     sql<{ total: number }[]>`select count(*)::int as total from reviews where ${where}`,
   ])
@@ -175,10 +189,17 @@ export async function getReviews(appId: string, f: ReviewQuery = {}) {
 }
 
 export async function getReview(appId: string, reviewId: string) {
-  const [row] = await db()<Review[]>`
-    select app_id, review_id, author, rating, title, body, app_version, reviewed_at, sentiment, topic, label, label_kind
-    from reviews where app_id = ${appId} and review_id = ${reviewId}`
+  const sql = db()
+  const [row] = await sql<Review[]>`
+    select ${sql.unsafe(REVIEW_COLS)} from reviews where app_id = ${appId} and review_id = ${reviewId}`
   return row ?? null
+}
+
+/** How many analysed reviews carry each willingness-to-pay signal (none excluded). */
+export async function signalCounts(appId: string) {
+  return db()<{ signal: string; count: number }[]>`
+    select wtp_signal as signal, count(*)::int as count from reviews
+    where app_id = ${appId} and wtp_signal is not null and wtp_signal <> 'none' group by 1 order by count desc`
 }
 
 export async function topicCounts(appId: string) {
@@ -207,8 +228,10 @@ export async function getInsights(appId: string) {
   return row ?? null
 }
 
+/** Reviews the next analysis run would send: never analysed, or analysed by an older classifier. */
 export async function unanalysedCount(appId: string) {
-  const [r] = await db()<{ n: number }[]>`select count(*)::int as n from reviews where app_id = ${appId} and analysed_at is null`
+  const [r] = await db()<{ n: number }[]>`
+    select count(*)::int as n from reviews where app_id = ${appId} and (analysed_at is null or analysis_version < ${ANALYSIS_VERSION})`
   return r.n
 }
 
@@ -256,6 +279,8 @@ export async function dashboardStats() {
       neutral: number
       negative: number
       errors: number
+      opportunities: number
+      signals: number
     }[]
   >`
     select
@@ -268,7 +293,10 @@ export async function dashboardStats() {
       coalesce((select sum((sentiment->>'positive')::int)::int from insights), 0) as positive,
       coalesce((select sum((sentiment->>'neutral')::int)::int from insights), 0) as neutral,
       coalesce((select sum((sentiment->>'negative')::int)::int from insights), 0) as negative,
-      (select count(*)::int from apps where status = 'error') as errors`
+      (select count(*)::int from apps where status = 'error') as errors,
+      (select count(*)::int from opportunities where status = 'surfaced') as opportunities,
+      ((select count(*) from reviews where wtp_signal <> 'none' and coalesce(reviewed_at, fetched_at) > now() - interval '30 days')
+        + (select count(*) from items where wtp_signal <> 'none' and coalesce(posted_at, fetched_at) > now() - interval '30 days'))::int as signals`
   const perDay = await sql<{ day: string; count: number }[]>`
     select to_char(d, 'YYYY-MM-DD') as day, coalesce(count(r.*), 0)::int as count
     from generate_series(current_date - 29, current_date, interval '1 day') d
@@ -292,9 +320,18 @@ export async function compareApps(ids: string[]) {
 
 /** Everything the app shell (sidebar, command menu) needs, in one round trip. */
 export async function navSummary() {
-  const [row] = await db()<{ apps: { id: string; name: string; store: Store; icon: string | null }[] | null; boards: number }[]>`
+  const [row] = await db()<
+    {
+      apps: { id: string; name: string; store: Store; icon: string | null }[] | null
+      boards: number
+      opportunities: number
+      verdicts: number
+    }[]
+  >`
     select
       (select json_agg(json_build_object('id', id, 'name', coalesce(nullif(name, ''), store_id), 'store', store, 'icon', icon_path) order by created_at desc) from apps) as apps,
-      (select count(*)::int from boards) as boards`
-  return { apps: row.apps ?? [], boards: row.boards }
+      (select count(*)::int from boards) as boards,
+      (select count(*)::int from opportunities where status <> 'killed') as opportunities,
+      (select count(*)::int from review_verdicts) as verdicts`
+  return { apps: row.apps ?? [], boards: row.boards, opportunities: row.opportunities, verdicts: row.verdicts }
 }

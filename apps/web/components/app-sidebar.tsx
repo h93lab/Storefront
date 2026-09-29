@@ -2,7 +2,18 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Bookmark, GitCompare, History, LayoutDashboard, Library, Settings, Smartphone } from "lucide-react"
+import {
+  Bookmark,
+  ClipboardPaste,
+  GitCompare,
+  History,
+  ListChecks,
+  LayoutDashboard,
+  Lightbulb,
+  Library,
+  Settings,
+  Smartphone,
+} from "lucide-react"
 import {
   Sidebar,
   SidebarContent,
@@ -22,16 +33,29 @@ const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/apps", label: "Library", icon: Library, count: "apps" as const },
   { href: "/boards", label: "Boards", icon: Bookmark, count: "boards" as const },
+  { href: "/opportunities", label: "Opportunities", icon: Lightbulb, count: "opportunities" as const },
+  { href: "/import", label: "Import", icon: ClipboardPaste },
+  { href: "/review", label: "Review", icon: ListChecks, count: "verdicts" as const },
   { href: "/compare", label: "Compare", icon: GitCompare },
   { href: "/changes", label: "Changes", icon: History },
   { href: "/settings", label: "Settings", icon: Settings },
 ]
 
-export function AppSidebar({ appCount, boardCount }: { appCount: number; boardCount: number }) {
+export function AppSidebar({
+  appCount,
+  boardCount,
+  opportunityCount,
+  reviewCount,
+}: {
+  appCount: number
+  boardCount: number
+  opportunityCount: number
+  reviewCount: number
+}) {
   const pathname = usePathname()
   const { setOpenMobile } = useSidebar()
   const active = (href: string) => (href === "/" ? pathname === "/" : pathname.startsWith(href))
-  const counts = { apps: appCount, boards: boardCount }
+  const counts = { apps: appCount, boards: boardCount, opportunities: opportunityCount, verdicts: reviewCount }
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
