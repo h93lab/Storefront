@@ -18,9 +18,11 @@ import {
   listBoards,
   parseStoreUrl,
   resolveMediaPath,
+  signalCounts,
   storeClient,
   topicCounts,
   TOPICS,
+  WTP_SIGNALS,
 } from "@lens/core"
 import { z } from "zod"
 
@@ -173,11 +175,15 @@ export function buildServer() {
     "get_reviews",
     {
       title: "Get reviews",
-      description: `Stored store reviews, newest first by default. Topics come from the AI pass: ${TOPICS.join(", ")}.`,
+      description: `Stored store reviews, newest first by default. Topics come from the AI pass: ${TOPICS.join(", ")}. Each analysed review also carries a willingness-to-pay signal (${WTP_SIGNALS.join(", ")}), any competitor named, a workaround described, a verbatim evidence quote and a pain score 0-5.`,
       inputSchema: {
         app_id: uuid,
         rating: z.enum(["all", "pos", "neu", "neg"]).optional().describe("pos = 4-5 stars, neu = 3, neg = 1-2"),
         topic: z.string().optional(),
+        signal: z
+          .enum(["any", ...WTP_SIGNALS])
+          .optional()
+          .describe("Only reviews with this willingness-to-pay signal; any = every signal except none"),
         query: z.string().optional().describe("Text search in title and body"),
         sort: z.enum(["new", "low", "high"]).optional(),
         limit: z.number().int().min(1).max(200).optional(),
@@ -185,12 +191,17 @@ export function buildServer() {
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ app_id, rating, topic, query, sort, limit, offset }) => {
-      const { rows, total } = await getReviews(app_id, { rating, topic, q: query, sort, limit: limit ?? 50, offset })
+    async ({ app_id, rating, topic, signal, query, sort, limit, offset }) => {
+      const [{ rows, total }, topics, signals] = await Promise.all([
+        getReviews(app_id, { rating, topic, signal, q: query, sort, limit: limit ?? 50, offset }),
+        topicCounts(app_id),
+        signalCounts(app_id),
+      ])
       return json({
         total,
         returned: rows.length,
-        topics: await topicCounts(app_id),
+        topics,
+        signals,
         reviews: rows.map((r) => ({
           review_id: r.review_id,
           rating: r.rating,
@@ -201,6 +212,11 @@ export function buildServer() {
           sentiment: r.sentiment,
           topic: r.topic,
           label: r.label,
+          wtp_signal: r.wtp_signal,
+          competitor: r.competitor_mentioned,
+          workaround: r.workaround,
+          evidence: r.evidence_span,
+          pain: r.pain_score,
         })),
       })
     },

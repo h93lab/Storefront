@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { clearAiKeyAction, saveAiSettingsAction, saveSyncSettingsAction, testAiAction } from "@/app/actions"
+import { clearAiKeyAction, reanalyseAllAction, saveAiSettingsAction, saveSyncSettingsAction, testAiAction } from "@/app/actions"
 import { Button } from "@/components/ui/button"
 import { CardContent, CardFooter } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -122,8 +122,32 @@ export function AiSettingsForm({ initial }: { initial: { baseUrl: string; model:
           {testing && <Spinner />}
           Test connection
         </Button>
+        <ReanalyseAllButton disabled={!initial.baseUrl || !initial.model} />
       </CardFooter>
     </form>
+  )
+}
+
+/** Sends every review classified by an older analyser (or never classified) through the model again. */
+function ReanalyseAllButton({ disabled }: { disabled: boolean }) {
+  const [pending, start] = React.useTransition()
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      className="ml-auto"
+      disabled={disabled || pending}
+      onClick={() =>
+        start(async () => {
+          const r = await reanalyseAllAction()
+          if (r.ok) toast.success("Re-analysis queued", { description: "Apps with outdated or missing analysis are processed one by one." })
+          else toast.error(r.error)
+        })
+      }
+    >
+      {pending && <Spinner />}
+      Re-analyse all apps
+    </Button>
   )
 }
 

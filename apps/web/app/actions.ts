@@ -67,6 +67,15 @@ export async function analyseAppAction(appId: string) {
   }, "Analysis queued")
 }
 
+/** Re-runs the classifier on every review analysed by an older version (and any never analysed). */
+export async function reanalyseAllAction() {
+  return run(async () => {
+    const s = await getSettings()
+    if (!s.ai.baseUrl || !s.ai.model) throw new Error("Add an AI provider in Settings first.")
+    return enqueue("analyse_all")
+  }, "Re-analysis queued for all apps")
+}
+
 export async function createBoardAction(name: string, description?: string) {
   return run(async () => {
     const id = await createBoard(name, description)

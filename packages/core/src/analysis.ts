@@ -1,5 +1,6 @@
 import { chat, parseJsonReply } from "./ai"
 import { db } from "./db"
+import { enqueue } from "./jobs"
 import { aiConfigured, getSettings, type Settings } from "./settings"
 import { mapLimit } from "./sync"
 
@@ -17,26 +18,63 @@ export const TOPICS = [
   "Other",
 ] as const
 
+/**
+ * Bump when the classifier's output changes shape. Reviews analysed with an
+ * older version are picked up again by the next analysis run.
+ */
+export const ANALYSIS_VERSION = 2
+
+export const WTP_SIGNALS = ["paying_competitor", "churned", "workaround", "stated_wtp", "none"] as const
+export type WtpSignal = (typeof WTP_SIGNALS)[number]
+
 type Sentiment = "positive" | "neutral" | "negative"
 type Kind = "complaint" | "request" | "praise" | "other"
 
-interface Classified {
+export interface Classified {
   id: string
   sentiment: Sentiment
   topic: string
   kind: Kind
   label: string
+  /** How strongly the reviewer signals they would pay for a fix; `none` for most reviews. */
+  wtp_signal: WtpSignal
+  /** Another app named in the review, or null. Never inferred. */
+  competitor: string | null
+  /** What the reviewer does instead of the missing capability, or null. */
+  workaround: string | null
+  /** A verbatim substring of the review that supports the label, or null. */
+  evidence: string | null
+  /** 0 = no pain, 5 = blocks the reviewer from using the app. */
+  pain: number
+  raw: unknown
 }
 
-const SYSTEM = `You analyse mobile app store reviews for a product designer.
-For every review return: sentiment (positive|neutral|negative), topic (one of: ${TOPICS.join(", ")}),
-kind (complaint|request|praise|other) and label: a short English phrase (3-7 words) naming the specific
-complaint, requested feature or praised aspect, written so similar reviews get the same label
-(e.g. "Paywall before trying content", "Offline mode", "Sleep stories quality").
-Reviews may be in any language; always answer in English.
-Respond with JSON only: {"items":[{"id":"...","sentiment":"...","topic":"...","kind":"...","label":"..."}]}`
+const SYSTEM = `You analyse mobile app store reviews for a product designer looking for gaps in existing apps.
+For every review return:
+- sentiment: positive|neutral|negative
+- topic: one of ${TOPICS.join(", ")}
+- kind: complaint|request|praise|other
+- label: an English noun phrase of at most 60 characters in the form "<missing capability> — <context>", written so
+  similar reviews get the same label (e.g. "Offline mode — sleep stories", "Free sample — before paywall"). No app names.
+- wtp_signal: paying_competitor (reviewer says they pay for another app), churned (cancelled, left, or looking for an
+  alternative), workaround (describes doing the job another way), stated_wtp (says they would pay for a change), or none.
+  Use none unless the review says so explicitly.
+- competitor: the other app named in the review, else null. Never guess.
+- workaround: the workaround described, at most 80 characters, else null.
+- evidence: the exact verbatim substring of the review (at most 200 characters) that supports the label, else null.
+- pain: 0-5, how much this problem stops the reviewer from using the app (praise = 0).
+Reviews may be in any language; write label and workaround in English, keep evidence in the original language.
+Respond with JSON only:
+{"items":[{"id":"...","sentiment":"...","topic":"...","kind":"...","label":"...","wtp_signal":"...","competitor":null,"workaround":null,"evidence":null,"pain":0}]}`
 
-export function normaliseItem(raw: Partial<Classified>): Classified | null {
+const str = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null)
+
+/**
+ * Coerces one model item to the fixed vocabularies. `source` is the review text
+ * the model saw; an `evidence` quote not found in it verbatim is dropped (the
+ * row is kept) so a stored quote is never a paraphrase.
+ */
+export function normaliseItem(raw: Partial<Classified> & Record<string, unknown>, source?: string): Classified | null {
   if (!raw?.id) return null
   const sentiment = (["positive", "neutral", "negative"] as const).includes(raw.sentiment as Sentiment)
     ? (raw.sentiment as Sentiment)
@@ -47,24 +85,45 @@ export function normaliseItem(raw: Partial<Classified>): Classified | null {
     .trim()
     .replace(/\.$/, "")
     .slice(0, 80)
-  return { id: String(raw.id), sentiment, topic, kind, label }
+  const wtp_signal = WTP_SIGNALS.includes(raw.wtp_signal as WtpSignal) ? (raw.wtp_signal as WtpSignal) : "none"
+  let evidence = str(raw.evidence, 200)
+  if (evidence && source !== undefined && !source.includes(evidence)) evidence = null
+  const pain = Math.min(5, Math.max(0, Math.round(Number(raw.pain) || 0)))
+  return {
+    id: String(raw.id),
+    sentiment,
+    topic,
+    kind,
+    label,
+    wtp_signal,
+    competitor: str(raw.competitor, 80),
+    workaround: str(raw.workaround, 80),
+    evidence,
+    pain,
+    raw,
+  }
 }
 
-async function classifyBatch(
-  cfg: Settings["ai"],
-  batch: { review_id: string; rating: number | null; title: string | null; body: string | null }[],
-) {
-  const payload = batch.map((r) => ({ id: r.review_id, rating: r.rating, text: `${r.title ?? ""}\n${r.body ?? ""}`.trim().slice(0, 1200) }))
+type PendingReview = { review_id: string; rating: number | null; title: string | null; body: string | null }
+
+const reviewText = (r: PendingReview) => `${r.title ?? ""}\n${r.body ?? ""}`.trim().slice(0, 1200)
+
+async function classifyBatch(cfg: Settings["ai"], batch: PendingReview[]) {
+  const payload = batch.map((r) => ({ id: r.review_id, rating: r.rating, text: reviewText(r) }))
   const reply = await chat(
     cfg,
     [
       { role: "system", content: SYSTEM },
       { role: "user", content: JSON.stringify(payload) },
     ],
-    { json: true, maxTokens: 6000 },
+    // Each item now carries a verbatim quote, so replies are roughly twice the size they were.
+    { json: true, maxTokens: 12_000 },
   )
-  const parsed = parseJsonReply<{ items?: Partial<Classified>[] }>(reply)
-  return (parsed.items ?? []).map(normaliseItem).filter((x): x is Classified => x !== null)
+  const parsed = parseJsonReply<{ items?: (Partial<Classified> & Record<string, unknown>)[] }>(reply)
+  const source = new Map(batch.map((r) => [r.review_id, reviewText(r)]))
+  return (parsed.items ?? [])
+    .map((item) => normaliseItem(item, source.get(String(item?.id ?? ""))))
+    .filter((x): x is Classified => x !== null)
 }
 
 const CLUSTER_SYSTEM = `You group near-duplicate labels from app reviews. Given complaint and request labels with counts,
@@ -75,6 +134,17 @@ Respond with JSON only: {"complaints":[{"label":"...","count":0}],"requests":[{"
 export interface AnalyseResult {
   classified: number
   reviewsCount: number
+}
+
+/**
+ * Queues an `analyse_app` job for every app with reviews not yet analysed by
+ * the current ANALYSIS_VERSION. Returns how many apps were queued.
+ */
+export async function queueReanalysis() {
+  const apps = await db()<{ app_id: string }[]>`
+    select distinct app_id from reviews where analysed_at is null or analysis_version < ${ANALYSIS_VERSION}`
+  for (const a of apps) await enqueue("analyse_app", { appId: a.app_id })
+  return apps.length
 }
 
 /**
@@ -96,12 +166,12 @@ export async function analyseApp(
   const sql = db()
   const log = opts.log ?? (() => {})
   const limit = settings.sync.reviewsPerApp
-  const batchSize = opts.batchSize ?? 40
+  const batchSize = opts.batchSize ?? 20
 
-  const pending = await sql<{ review_id: string; rating: number | null; title: string | null; body: string | null }[]>`
+  const pending = await sql<PendingReview[]>`
     select review_id, rating, title, body from (
       select * from reviews where app_id = ${appId} order by reviewed_at desc nulls last limit ${limit}
-    ) r where analysed_at is null`
+    ) r where analysed_at is null or analysis_version < ${ANALYSIS_VERSION}`
 
   // Batches run a few at a time; each batch is saved with a single statement.
   let classified = 0
@@ -114,9 +184,12 @@ export async function analyseApp(
       const items = await classifyBatch(settings.ai, batch)
       if (items.length) {
         await sql`
-        update reviews r set sentiment = v.sentiment, topic = v.topic, label = nullif(v.label, ''), label_kind = v.kind, analysed_at = now()
-        from unnest(${items.map((i) => i.id)}::text[], ${items.map((i) => i.sentiment)}::text[], ${items.map((i) => i.topic)}::text[],
-                    ${items.map((i) => i.label)}::text[], ${items.map((i) => i.kind)}::text[]) as v(id, sentiment, topic, label, kind)
+        update reviews r set sentiment = v.sentiment, topic = v.topic, label = nullif(v.label, ''), label_kind = v.kind,
+          wtp_signal = v.wtp_signal, competitor_mentioned = v.competitor, workaround = v.workaround, evidence_span = v.evidence,
+          pain_score = v.pain, raw_analysis = v.raw, analysis_version = ${ANALYSIS_VERSION}, analysed_at = now()
+        from jsonb_to_recordset(${sql.json(items as never)})
+          as v(id text, sentiment text, topic text, label text, kind text, wtp_signal text, competitor text, workaround text,
+               evidence text, pain smallint, raw jsonb)
         where r.app_id = ${appId} and r.review_id = v.id`
       }
       classified += items.length

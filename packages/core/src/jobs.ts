@@ -1,6 +1,6 @@
 import { db } from "./db"
 
-export type JobType = "sync_app" | "sync_all" | "analyse_app"
+export type JobType = "sync_app" | "sync_all" | "analyse_app" | "analyse_all"
 
 export interface Job {
   id: string

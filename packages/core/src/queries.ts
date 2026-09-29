@@ -1,3 +1,4 @@
+import { ANALYSIS_VERSION } from "./analysis"
 import { db } from "./db"
 import type { Store } from "./stores"
 
@@ -135,7 +136,15 @@ export interface Review {
   topic: string | null
   label: string | null
   label_kind: string | null
+  wtp_signal: string | null
+  competitor_mentioned: string | null
+  workaround: string | null
+  evidence_span: string | null
+  pain_score: number | null
 }
+
+const REVIEW_COLS = `app_id, review_id, author, rating, title, body, app_version, reviewed_at, sentiment, topic, label, label_kind,
+  wtp_signal, competitor_mentioned, workaround, evidence_span, pain_score`
 
 export type RatingFilter = "all" | "pos" | "neu" | "neg"
 export interface ReviewQuery {
@@ -143,6 +152,8 @@ export interface ReviewQuery {
   q?: string
   topic?: string | null
   sentiment?: string | null
+  /** A wtp_signal value, or "any" for every review with a signal other than none. */
+  signal?: string | null
   sort?: "new" | "low" | "high"
   limit?: number
   offset?: number
@@ -152,12 +163,14 @@ export async function getReviews(appId: string, f: ReviewQuery = {}) {
   const sql = db()
   const q = f.q?.trim() ? `%${f.q.trim()}%` : null
   const rating = f.rating ?? "all"
+  const signal = f.signal ?? null
   const where = sql`
     app_id = ${appId}
     and (${rating} = 'all' or (${rating} = 'pos' and rating >= 4) or (${rating} = 'neu' and rating = 3) or (${rating} = 'neg' and rating <= 2))
     and (${q}::text is null or title ilike ${q} or body ilike ${q})
     and (${f.topic ?? null}::text is null or topic = ${f.topic ?? ""})
-    and (${f.sentiment ?? null}::text is null or sentiment = ${f.sentiment ?? ""})`
+    and (${f.sentiment ?? null}::text is null or sentiment = ${f.sentiment ?? ""})
+    and (${signal}::text is null or (${signal} = 'any' and wtp_signal is not null and wtp_signal <> 'none') or wtp_signal = ${signal ?? ""})`
   const order =
     f.sort === "low"
       ? sql`rating asc nulls last, reviewed_at desc`
@@ -167,7 +180,7 @@ export async function getReviews(appId: string, f: ReviewQuery = {}) {
   const limit = Math.min(Math.max(f.limit ?? 50, 1), 500)
   const [rows, [{ total }]] = await Promise.all([
     sql<Review[]>`
-      select app_id, review_id, author, rating, title, body, app_version, reviewed_at, sentiment, topic, label, label_kind
+      select ${sql.unsafe(REVIEW_COLS)}
       from reviews where ${where} order by ${order} limit ${limit} offset ${f.offset ?? 0}`,
     sql<{ total: number }[]>`select count(*)::int as total from reviews where ${where}`,
   ])
@@ -175,10 +188,17 @@ export async function getReviews(appId: string, f: ReviewQuery = {}) {
 }
 
 export async function getReview(appId: string, reviewId: string) {
-  const [row] = await db()<Review[]>`
-    select app_id, review_id, author, rating, title, body, app_version, reviewed_at, sentiment, topic, label, label_kind
-    from reviews where app_id = ${appId} and review_id = ${reviewId}`
+  const sql = db()
+  const [row] = await sql<Review[]>`
+    select ${sql.unsafe(REVIEW_COLS)} from reviews where app_id = ${appId} and review_id = ${reviewId}`
   return row ?? null
+}
+
+/** How many analysed reviews carry each willingness-to-pay signal (none excluded). */
+export async function signalCounts(appId: string) {
+  return db()<{ signal: string; count: number }[]>`
+    select wtp_signal as signal, count(*)::int as count from reviews
+    where app_id = ${appId} and wtp_signal is not null and wtp_signal <> 'none' group by 1 order by count desc`
 }
 
 export async function topicCounts(appId: string) {
@@ -207,8 +227,10 @@ export async function getInsights(appId: string) {
   return row ?? null
 }
 
+/** Reviews the next analysis run would send: never analysed, or analysed by an older classifier. */
 export async function unanalysedCount(appId: string) {
-  const [r] = await db()<{ n: number }[]>`select count(*)::int as n from reviews where app_id = ${appId} and analysed_at is null`
+  const [r] = await db()<{ n: number }[]>`
+    select count(*)::int as n from reviews where app_id = ${appId} and (analysed_at is null or analysis_version < ${ANALYSIS_VERSION})`
   return r.n
 }
 

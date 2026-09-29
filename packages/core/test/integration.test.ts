@@ -64,12 +64,18 @@ suite("pipeline", () => {
         content = { ok: true }
       } else if (Array.isArray(user)) {
         content = {
-          items: user.map((r: { id: string; rating: number }) => ({
+          items: user.map((r: { id: string; rating: number; text: string }) => ({
             id: r.id,
             sentiment: r.rating >= 4 ? "positive" : r.rating === 3 ? "neutral" : "negative",
             topic: r.rating <= 2 ? "Pricing" : "Praise",
             kind: r.rating <= 2 ? "complaint" : r.rating === 3 ? "request" : "praise",
             label: r.rating <= 2 ? "Paywall before trying content" : "Arabic narration",
+            wtp_signal: r.text.includes("Paywall hit") ? "churned" : "none",
+            competitor: r.text.includes("Paywall hit") ? "Headspace" : null,
+            workaround: null,
+            // one verbatim quote, one paraphrase the normaliser must drop
+            evidence: r.text.includes("Paywall hit") ? "Paywall hit immediately" : r.id === "r1" ? "not in the review" : null,
+            pain: r.rating <= 2 ? 4 : 0,
           })),
         }
       } else {
@@ -306,6 +312,36 @@ suite("pipeline", () => {
     expect((await core.getReviews(appId, { topic: "Pricing" })).rows.every((r) => r.topic === "Pricing")).toBe(true)
     // second run has nothing new to classify
     expect((await core.analyseApp(appId)).classified).toBe(0)
+  })
+
+  it("stores opportunity signals and re-analyses reviews from an older classifier", async () => {
+    const r0 = await core.getReview(appId, "r0")
+    expect(r0).toMatchObject({
+      wtp_signal: "churned",
+      competitor_mentioned: "Headspace",
+      evidence_span: "Paywall hit immediately",
+      pain_score: 4,
+    })
+    expect((await core.getReview(appId, "r1"))!.evidence_span).toBeNull() // paraphrase dropped
+    const [{ raw, version }] = await core.db()<{ raw: { pain: number }; version: number }[]>`
+      select raw_analysis as raw, analysis_version as version from reviews where app_id = ${appId} and review_id = 'r0'`
+    expect(raw.pain).toBe(4)
+    expect(version).toBe(core.ANALYSIS_VERSION)
+    expect(await core.signalCounts(appId)).toEqual([{ signal: "churned", count: 1 }])
+    expect((await core.getReviews(appId, { signal: "any" })).total).toBe(1)
+    expect((await core.getReviews(appId, { signal: "churned" })).rows[0].review_id).toBe("r0")
+    expect((await core.getReviews(appId, { signal: "workaround" })).total).toBe(0)
+
+    // reviews classified by an older analyser count as pending and are queued by analyse_all
+    await core.db()`delete from jobs`
+    expect(await core.queueReanalysis()).toBe(0)
+    await core.db()`update reviews set analysis_version = 1 where app_id = ${appId} and review_id in ('r2', 'r3')`
+    expect(await core.unanalysedCount(appId)).toBe(2)
+    expect(await core.queueReanalysis()).toBe(1)
+    expect((await core.activeJobs(appId)).map((j) => j.type)).toEqual(["analyse_app"])
+    expect((await core.analyseApp(appId)).classified).toBe(2)
+    expect(await core.unanalysedCount(appId)).toBe(0)
+    await core.db()`delete from jobs`
   })
 
   it("manages boards", async () => {

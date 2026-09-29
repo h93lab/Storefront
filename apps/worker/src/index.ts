@@ -13,10 +13,12 @@ import {
   getSettings,
   isTransient,
   MAX_ATTEMPTS,
+  queueReanalysis,
   requeueStale,
   retryJob,
   setJobProgress,
   syncApp,
+  unanalysedCount,
   waitForDb,
   type Job,
 } from "@lens/core"
@@ -64,7 +66,8 @@ async function run(job: Job, signal: AbortSignal): Promise<string> {
     case "sync_app": {
       const r = await syncApp(appId, { log: (m) => log(m, { job: job.id, appId }), onProgress, signal })
       const settings = await getSettings()
-      if (aiConfigured(settings) && settings.ai.autoAnalyse && (r.newReviews > 0 || !(await getInsights(appId)))) {
+      // New reviews, reviews classified by an older analyser, or no insights yet all warrant a run.
+      if (aiConfigured(settings) && settings.ai.autoAnalyse && ((await unanalysedCount(appId)) > 0 || !(await getInsights(appId)))) {
         await enqueue("analyse_app", { appId })
       }
       const parts = [
@@ -79,6 +82,10 @@ async function run(job: Job, signal: AbortSignal): Promise<string> {
     case "analyse_app": {
       const r = await analyseApp(appId, { log: (m) => log(m, { job: job.id, appId }), onProgress, signal })
       return `${r.classified} reviews classified · insights from ${r.reviewsCount} reviews`
+    }
+    case "analyse_all": {
+      const n = await queueReanalysis()
+      return `Queued analysis for ${n} app${n === 1 ? "" : "s"}`
     }
     default:
       throw new Error(`Unknown job type ${job.type}`)

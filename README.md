@@ -193,7 +193,7 @@ The web app and the MCP server enqueue jobs in the `jobs` table; the worker clai
 
 **Jobs** report live progress, retry transient failures (timeouts, 429, 5xx, network) up to 3 times with backoff, and run two at a time without ever syncing the same app twice. A job interrupted by a restart is requeued on the next start.
 
-**AI analysis**: unanalysed reviews go to the configured model in batches of 40 (three in parallel) and come back with sentiment, one of 11 fixed topics, and a short complaint/request label. A second call merges similar labels into the top complaints and requests and writes a short summary.
+**AI analysis**: unanalysed reviews go to the configured model in batches of 20 (three in parallel) and come back with sentiment, one of 11 fixed topics, a short complaint/request label, and opportunity signals: a willingness-to-pay signal (`paying_competitor`, `churned`, `workaround`, `stated_wtp` or `none`), any competitor named, the workaround described, a verbatim evidence quote (dropped unless it appears in the review word for word) and a pain score 0–5. The model's raw item is kept in `reviews.raw_analysis`. A second call merges similar labels into the top complaints and requests and writes a short summary. Each review records the `analysis_version` it was classified with; when the classifier changes, **Settings → Re-analyse all apps** (or the `analyse_all` job) sends older rows through again.
 
 ### MCP tools
 
