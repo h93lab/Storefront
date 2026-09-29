@@ -553,10 +553,20 @@ export async function getOpportunity(id: number | string) {
         ((select count(*) from reviews r where lower(trim(r.label)) = ol.label)
           + (select count(*) from items i where lower(trim(i.label)) = ol.label))::int as count
       from opportunity_labels ol where ol.opportunity_id = ${n} order by count desc, ol.label`,
-    sql<{ spec_md: string | null }[]>`select spec_md from opportunities where id = ${n}`,
+    sql<{ spec_md: string | null; validation: ValidationKit | null; validation_metrics: ValidationMetrics | null }[]>`
+      select spec_md, validation, validation_metrics from opportunities where id = ${n}`,
   ])
   if (!stats) return null
-  return { ...stats, spec_md: specRows[0]?.spec_md ?? null, evidence, labels }
+  const validation_metrics = specRows[0]?.validation_metrics ?? null
+  return {
+    ...stats,
+    spec_md: specRows[0]?.spec_md ?? null,
+    validation: specRows[0]?.validation ?? null,
+    validation_metrics,
+    validation_decision: validationDecision(validation_metrics),
+    evidence,
+    labels,
+  }
 }
 
 export interface EvidenceQuery {
@@ -927,6 +937,140 @@ export async function generateSpec(
   await saveSpec(opp.id, md)
   opts.log?.(`spec saved (${md.length} chars)`)
   return md
+}
+
+/* --------------------------------------------------------------- validation */
+
+export interface ValidationKit {
+  headline: string
+  subheadline: string
+  bullets: string[]
+  cta: string
+  price: string
+  thread_reply: string
+  waitlist_copy: string
+  generated_at: string
+}
+
+export interface ValidationMetrics {
+  waitlist: number
+  price_clicks: number
+  replies: number
+  started_at: string | null
+  recorded_at: string
+}
+
+export type ValidationDecision = "proceed" | "kill" | "pending"
+
+const VALIDATION_SYSTEM = `You write a fake-door validation kit (landing copy plus a public thread reply) for a solo founder testing a small mobile app idea found in app-store reviews.
+Reply with JSON only, exactly this shape:
+{"headline":"…","subheadline":"…","bullets":["…","…","…"],"cta":"Start 7-day trial — $X/mo","price":"$X/mo","thread_reply":"…","waitlist_copy":"…"}
+Rules:
+- The bullets must paraphrase the real quotes provided; never invent claims or features nobody asked for.
+- thread_reply is a public, non-spammy reply for the original thread. It acknowledges the problem and asks whether they would like to try a rough prototype. No links, no hype.
+- price is copied from a named competitor when a price is known for one, otherwise "$4.99/mo". The cta uses the same price.
+- headline is at most 90 characters, subheadline at most 160, each bullet at most 140.`
+
+const clip = (v: unknown, max: number, field: string) => {
+  const t = typeof v === "string" ? v.replace(/\s+/g, " ").trim() : ""
+  if (!t) throw new Error(`The model's validation kit is missing "${field}"`)
+  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t
+}
+
+/** Checks and truncates a model reply into a kit. Throws when a field is missing. */
+export function validateKit(reply: unknown): Omit<ValidationKit, "generated_at"> {
+  const r = (reply && typeof reply === "object" ? reply : {}) as Record<string, unknown>
+  const raw = Array.isArray(r.bullets) ? r.bullets.filter((b) => typeof b === "string" && b.trim()) : []
+  if (raw.length < 3) throw new Error('The model\'s validation kit needs 3 "bullets"')
+  return {
+    headline: clip(r.headline, 90, "headline"),
+    subheadline: clip(r.subheadline, 160, "subheadline"),
+    bullets: raw.slice(0, 3).map((b) => clip(b, 140, "bullets")),
+    cta: clip(r.cta, 60, "cta"),
+    price: clip(r.price, 20, "price"),
+    thread_reply: clip(r.thread_reply, 800, "thread_reply"),
+    waitlist_copy: clip(r.waitlist_copy, 300, "waitlist_copy"),
+  }
+}
+
+export async function generateValidation(
+  id: number | string,
+  opts: { signal?: AbortSignal; log?: (m: string) => void; onProgress?: (m: string) => void } = {},
+): Promise<ValidationKit> {
+  const settings = await getSettings()
+  if (!aiConfigured(settings)) throw new Error("AI provider is not configured. Add a base URL and model in Settings.")
+  const opp = await getOpportunity(id)
+  if (!opp) throw new Error("Opportunity not found")
+  opts.signal?.throwIfAborted()
+  opts.onProgress?.("Writing the validation kit")
+
+  const weight = (e: Evidence) => (e.wtp_signal && e.wtp_signal !== "none" ? 10 : 0) + (e.pain_score ?? 0)
+  const top = [...opp.evidence].sort((a, b) => weight(b) - weight(a)).slice(0, 8)
+  const clean = (e: Evidence) => (e.evidence_span ?? e.body ?? "").replace(/\s+/g, " ")
+  const quotes = top.map((e, i) => `Q${i + 1} [${e.app_name ?? e.source}]: "${clean(e).slice(0, 300)}"`)
+  const prices = [
+    ...new Set(opp.evidence.flatMap((e) => (e.body ?? "").match(/\$\s?\d+(?:[.,]\d{1,2})?(?:\s?\/\s?(?:mo|month|yr|year|week))?/gi) ?? [])),
+  ].slice(0, 8)
+  const prompt = [
+    `Opportunity: ${opp.label} (${opp.kind})`,
+    `Evidence: ${opp.n} reviews/items; average pain ${opp.avg_pain.toFixed(1)}/5.`,
+    `Competitors named: ${opp.competitors.map((c) => `${c.name} (${c.count})`).join(", ") || "none"}`,
+    `Price amounts seen in the evidence: ${prices.join(", ") || "none"}`,
+    "",
+    "Quotes:",
+    ...quotes,
+  ].join("\n")
+
+  const reply = await chat(
+    settings.ai,
+    [
+      { role: "system", content: VALIDATION_SYSTEM },
+      { role: "user", content: prompt },
+    ],
+    { json: true, maxTokens: 2000 },
+  )
+  const kit: ValidationKit = { ...validateKit(parseJsonReply<unknown>(reply)), generated_at: new Date().toISOString() }
+  opts.signal?.throwIfAborted()
+  const sql = db()
+  await sql`update opportunities set validation = ${sql.json(kit as never)}, updated_at = now() where id = ${opp.id}`
+  opts.log?.("validation kit saved")
+  return kit
+}
+
+export async function saveValidationMetrics(
+  id: number | string,
+  m: { waitlist?: number; price_clicks?: number; trial_clicks?: number; replies?: number; started_at?: Date | string | null },
+): Promise<ValidationMetrics & { decision: ValidationDecision }> {
+  const count = (v: unknown) => Math.max(0, Math.round(Number(v) || 0))
+  const started = m.started_at ? new Date(m.started_at) : null
+  if (started && Number.isNaN(started.getTime())) throw new Error("Invalid start date")
+  const value: ValidationMetrics = {
+    waitlist: count(m.waitlist),
+    price_clicks: count(m.price_clicks ?? m.trial_clicks),
+    replies: count(m.replies),
+    started_at: started ? started.toISOString() : null,
+    recorded_at: new Date().toISOString(),
+  }
+  const sql = db()
+  const rows = await sql`update opportunities set validation_metrics = ${sql.json(value as never)}, updated_at = now()
+    where id = ${oppId(id)} returning id`
+  if (!rows.length) throw new Error("Opportunity not found")
+  return { ...value, decision: validationDecision(value) }
+}
+
+/**
+ * proceed: waitlist >= 20 or price clicks >= 5 or replies >= 3.
+ * kill: none of those and the test started at least 5 days ago. Otherwise pending.
+ */
+export function validationDecision(
+  metrics: Partial<Pick<ValidationMetrics, "waitlist" | "price_clicks" | "replies" | "started_at">> | null | undefined,
+  now = new Date(),
+): ValidationDecision {
+  if (!metrics) return "pending"
+  if ((metrics.waitlist ?? 0) >= 20 || (metrics.price_clicks ?? 0) >= 5 || (metrics.replies ?? 0) >= 3) return "proceed"
+  const started = metrics.started_at ? new Date(metrics.started_at).getTime() : NaN
+  if (!Number.isNaN(started) && now.getTime() - started >= 5 * 86_400_000) return "kill"
+  return "pending"
 }
 
 /* -------------------------------------------------------------------- items */

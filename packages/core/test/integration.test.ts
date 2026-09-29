@@ -76,7 +76,17 @@ suite("pipeline", () => {
         user = null
       }
       let content: unknown
-      if (msgs[0].content.includes("SPEC")) {
+      if (msgs[0].content.includes("headline")) {
+        content = {
+          headline: "H".repeat(120),
+          subheadline: "Sleep stories that work on a plane",
+          bullets: ["Works offline", "No paywall before trying", "Arabic narration", "extra bullet"],
+          cta: "Start 7-day trial — $4.99/mo",
+          price: "$4.99/mo",
+          thread_reply: "Sounds frustrating. Would you try a rough prototype?",
+          waitlist_copy: "Join the waitlist.",
+        }
+      } else if (msgs[0].content.includes("SPEC")) {
         content = "# Spec\n\n## 1. Problem in the users' words\nQ1\n\n## 3. MVP scope\n1. Free sample before the paywall"
       } else if (user === null) {
         content = { ok: true }
@@ -716,6 +726,39 @@ suite("pipeline", () => {
     await core.finishJob(a, "ok")
     expect((await core.claimJob())?.type).toBe("group_labels")
     await core.db()`delete from jobs`
+  })
+
+  it("generates a validation kit and decides from metrics", async () => {
+    const opp = (await core.listOpportunities({ status: "all" })).find((o) => o.label.includes("offline"))!
+    expect((await core.getOpportunity(opp.id))!.validation).toBeNull()
+    const kit = await core.generateValidation(opp.id)
+    expect(kit.headline).toHaveLength(90)
+    expect(kit.bullets).toEqual(["Works offline", "No paywall before trying", "Arabic narration"])
+    expect(kit).toMatchObject({ price: "$4.99/mo", cta: "Start 7-day trial — $4.99/mo" })
+    const detail = (await core.getOpportunity(opp.id))!
+    expect(detail.validation).toEqual(kit)
+    expect(detail.validation_decision).toBe("pending")
+
+    const now = new Date("2026-09-29T12:00:00Z")
+    const ago = (d: number) => new Date(now.getTime() - d * 86_400_000).toISOString()
+    expect(core.validationDecision(null, now)).toBe("pending")
+    expect(core.validationDecision({ waitlist: 20 }, now)).toBe("proceed")
+    expect(core.validationDecision({ price_clicks: 5 }, now)).toBe("proceed")
+    expect(core.validationDecision({ replies: 3 }, now)).toBe("proceed")
+    expect(core.validationDecision({ waitlist: 19, price_clicks: 4, replies: 2, started_at: ago(1) }, now)).toBe("pending")
+    expect(core.validationDecision({ waitlist: 19, price_clicks: 4, replies: 2, started_at: ago(5) }, now)).toBe("kill")
+    expect(core.validationDecision({ waitlist: 20, started_at: ago(9) }, now)).toBe("proceed")
+    expect(core.validationDecision({ waitlist: 0, started_at: null }, now)).toBe("pending")
+
+    const saved = await core.saveValidationMetrics(opp.id, { waitlist: 3, price_clicks: 1, replies: 0, started_at: ago(6) })
+    expect(saved.decision).toBe("kill")
+    const after = (await core.getOpportunity(opp.id))!
+    expect(after.validation_metrics).toMatchObject({ waitlist: 3, price_clicks: 1, replies: 0, started_at: ago(6) })
+    expect(after.validation_metrics!.recorded_at).toBeTruthy()
+    expect(after.validation_decision).toBe("kill")
+    await core.saveValidationMetrics(opp.id, { replies: 3 })
+    expect((await core.getOpportunity(opp.id))!.validation_decision).toBe("proceed")
+    await expect(core.saveValidationMetrics(999999, { waitlist: 1 })).rejects.toThrow(/not found/)
   })
 
   it("manages boards", async () => {
