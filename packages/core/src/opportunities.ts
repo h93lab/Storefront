@@ -1,5 +1,6 @@
 import { AiError, chat, embed, embeddingConfigured, parseJsonReply } from "./ai"
 import { ANALYSIS_VERSION, applyClassifications, classifyBatch, pendingItems, submitClassificationBatch, WTP_SIGNALS } from "./analysis"
+import { demandHint, marketSummaryFor, type MarketSummary } from "./appllama"
 import { db, type Sql } from "./db"
 import { enqueue } from "./jobs"
 import { aiConfigured, DEFAULT_SETTINGS, getSettings, type Settings } from "./settings"
@@ -558,6 +559,14 @@ export async function getOpportunity(id: number | string) {
       select spec_md, validation, validation_metrics from opportunities where id = ${n}`,
   ])
   if (!stats) return null
+  const evidenceAppIds = [...new Set(evidence.map((e) => e.app_id).filter((x): x is string => Boolean(x)))]
+  const [market, evidenceApps] = await Promise.all([
+    marketSummaryFor(evidenceAppIds),
+    evidenceAppIds.length
+      ? sql<{ rating: number | null; ratings_count: number | null }[]>`
+          select rating::float8, ratings_count::float8 as ratings_count from apps where id = any(${evidenceAppIds}::uuid[])`
+      : Promise.resolve([]),
+  ])
   const validation_metrics = specRows[0]?.validation_metrics ?? null
   return {
     ...stats,
@@ -567,6 +576,14 @@ export async function getOpportunity(id: number | string) {
     validation_decision: validationDecision(validation_metrics),
     evidence,
     labels,
+    market,
+    gate_hints: {
+      demand: demandHint({
+        n: stats.n,
+        listings: stats.listings,
+        apps: [...evidenceApps, ...market.map((m) => ({ rating: m.rating, ratings_count: m.ratings_count }))],
+      }),
+    },
   }
 }
 
@@ -886,6 +903,25 @@ Paywall placement, price copied from a named competitor if one is known (otherwi
 Tasks of at most 2 hours each.
 Output the Markdown only.`
 
+const compact = (n: number | null) =>
+  n === null ? "unknown" : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}K` : String(Math.round(n))
+const usd = (n: number | null) => (n === null ? "none" : `$${n.toFixed(2)}`)
+
+/** Prompt lines with real competitor numbers from Appllama (empty when no evidence app has market data). */
+export function marketPromptBlock(market: MarketSummary[]): string[] {
+  if (!market.length) return []
+  return [
+    "",
+    "Market data (Appllama, real figures for competitor apps in the evidence):",
+    ...market
+      .slice(0, 8)
+      .map(
+        (m) =>
+          `- ${m.name}: revenue ${m.revenue_monthly_usd === null ? "unknown" : `$${compact(m.revenue_monthly_usd)}/month`}, downloads ${compact(m.downloads)}, monthly price ${usd(m.monthly_price)}, annual price ${usd(m.annual_price)}`,
+      ),
+  ]
+}
+
 const day = (d: Date | string | null) => (d ? new Date(d).toISOString().slice(0, 10) : "undated")
 
 export async function generateSpec(
@@ -913,6 +949,8 @@ export async function generateSpec(
       .join(", ")}`,
     `Competitors named: ${opp.competitors.map((c) => `${c.name} (${c.count})`).join(", ") || "none"}`,
     opp.notes ? `Founder notes: ${opp.notes}` : "",
+    ...marketPromptBlock(opp.market),
+    ...(opp.market.length ? ["Copy the price in section 7 from the closest competitor in the market data above."] : []),
     "",
     "Quotes:",
     ...quotes,
@@ -1017,6 +1055,8 @@ export async function generateValidation(
     `Evidence: ${opp.n} reviews/items; average pain ${opp.avg_pain.toFixed(1)}/5.`,
     `Competitors named: ${opp.competitors.map((c) => `${c.name} (${c.count})`).join(", ") || "none"}`,
     `Price amounts seen in the evidence: ${prices.join(", ") || "none"}`,
+    ...marketPromptBlock(opp.market),
+    ...(opp.market.length ? ["Copy the price from the closest competitor in the market data above."] : []),
     "",
     "Quotes:",
     ...quotes,
