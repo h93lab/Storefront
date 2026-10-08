@@ -13,10 +13,12 @@ import { cn } from "@/lib/utils"
 export function AppTabs({
   tab,
   counts,
+  market,
   children,
 }: {
   tab: string
   counts: { reviews: number; screenshots: number; changes: number }
+  market?: { screens: number } | null
   children: React.ReactNode
 }) {
   const router = useRouter()
@@ -45,11 +47,22 @@ export function AppTabs({
     [
       "screenshots",
       <>
-        <span className="sm:hidden">Screens</span>
+        <span className="sm:hidden">Shots</span>
         <span className="hidden sm:inline">Screenshots</span>
         <span className="text-muted-foreground tabular-nums">{counts.screenshots}</span>
       </>,
     ],
+    ...(market
+      ? ([
+          ["market", "Market"],
+          [
+            "screens",
+            <>
+              Market screens <span className="text-muted-foreground tabular-nums">{market.screens}</span>
+            </>,
+          ],
+        ] as [string, React.ReactNode][])
+      : []),
     [
       "reviews",
       <>

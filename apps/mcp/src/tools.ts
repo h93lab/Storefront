@@ -4,6 +4,8 @@ import {
   accuracyStats,
   addApp,
   addBoardItem,
+  appllamaConnected,
+  appllamaSearch,
   compareApps,
   createBoard,
   enqueue,
@@ -12,6 +14,10 @@ import {
   getBoard,
   getChanges,
   getInsights,
+  getMarket,
+  getSettings,
+  estimateCredits,
+  db,
   getReviews,
   getScreenshot,
   getOpportunity,
@@ -761,6 +767,115 @@ export function buildServer() {
       annotations: { readOnlyHint: true },
     },
     async ({ opportunity_id }) => attempt(() => similarOpportunities(opportunity_id)),
+  )
+
+  const NOT_CONNECTED = "Appllama is not connected. Connect it in Settings."
+  const HARVEST = "Appllama terms forbid harvesting: use it for a real research task, never to sweep the catalog and copy the dataset."
+
+  server.registerTool(
+    "market_search",
+    {
+      title: "Search Appllama market",
+      description:
+        "Search Appllama's catalog of top-grossing iOS apps (revenue, downloads, ratings, prices, flows). Each call spends 1 Appllama credit " +
+        "from the monthly allowance; results include the remaining credits. Each app has `saved` (market data stored locally) and " +
+        "`library_app_id`. Paginate with next_cursor, one page at a time. " +
+        HARVEST,
+      inputSchema: {
+        query: z.string().optional().describe("Free text: name, category or idea"),
+        sort: z.string().optional().describe("Sort order as accepted by Appllama search_apps"),
+        cursor: z.string().optional().describe("next_cursor from the previous page"),
+        launched_after: z.string().optional().describe("ISO date"),
+        launched_before: z.string().optional().describe("ISO date"),
+        downloads_min: z.number().optional(),
+        downloads_max: z.number().optional(),
+        revenue_min: z.number().optional().describe("Monthly USD"),
+        revenue_max: z.number().optional().describe("Monthly USD"),
+        rating_min: z.number().optional(),
+        rating_max: z.number().optional(),
+        price_min: z.number().optional(),
+        price_max: z.number().optional(),
+        onboarding_steps_min: z.number().int().optional(),
+        onboarding_steps_max: z.number().int().optional(),
+        board_id: z.string().optional().describe("Restrict to an Appllama board"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (params) => {
+      if (!appllamaConnected(await getSettings())) return fail(NOT_CONNECTED)
+      try {
+        const r = await appllamaSearch(params)
+        return json({
+          apps: r.apps,
+          total: r.total ?? null,
+          next_cursor: r.next_cursor ?? null,
+          credits: r.credits ?? null,
+        })
+      } catch (e) {
+        return fail((e as Error).message)
+      }
+    },
+  )
+
+  server.registerTool(
+    "market_save",
+    {
+      title: "Save Appllama app",
+      description:
+        "Queue a worker job that saves an Appllama app into the library: its market profile plus every screen, stored locally. " +
+        "Costs Appllama credits: 1 + screens/10 (rounded up), e.g. 40 screens = 5 credits; pass screens_count (from market_search) to get the estimate. " +
+        "Set screens=false to save only the profile (1 credit). Returns {job_id, estimated_credits}; poll the job in the web UI. " +
+        HARVEST,
+      inputSchema: {
+        appllama_id: z.string().min(1).describe("app_id from market_search"),
+        screens: z.boolean().optional().describe("Also download every screen (default true)"),
+        screens_count: z.number().int().min(0).optional().describe("screens_count from market_search, used only for the estimate"),
+      },
+    },
+    async ({ appllama_id, screens, screens_count }) => {
+      if (!appllamaConnected(await getSettings())) return fail(NOT_CONNECTED)
+      try {
+        const [row] = await db()<{ app_id: string; screens_count: number | null; screens_synced: number }[]>`
+          select app_id::text, screens_count, screens_synced from app_market where appllama_id = ${appllama_id}`
+        const complete = row && screens !== false && (row.screens_count ?? 0) > 0 && row.screens_synced >= (row.screens_count ?? 0)
+        if (complete) {
+          return json({
+            job_id: null,
+            estimated_credits: 0,
+            already_saved: true,
+            library_app_id: row.app_id,
+            note: "Already saved with all screens.",
+          })
+        }
+        const estimated = screens === false ? 1 : screens_count != null ? estimateCredits({ screens_count }) : null
+        const jobId = await enqueue("market_save", {
+          appllamaId: appllama_id,
+          ...(screens === false ? { screens: false } : {}),
+          ...(row ? { appId: row.app_id } : {}),
+        })
+        return json({ job_id: jobId, estimated_credits: estimated })
+      } catch (e) {
+        return fail((e as Error).message)
+      }
+    },
+  )
+
+  server.registerTool(
+    "get_market",
+    {
+      title: "Get market data",
+      description:
+        "Saved Appllama market data for a library app: profile (revenue, downloads, rating, prices, flows) and its screens in journey order " +
+        "with absolute image URLs (view them with the URL). Reads local data only; costs no credits. Errors when the app has no saved market data (use market_save).",
+      inputSchema: { app_id: uuid },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ app_id }) => {
+      const m = await getMarket(app_id)
+      if (!m) return fail("This app has no saved market data. Use market_save to fetch it from Appllama.")
+      const withUrl = <T extends { path: string | null }>(s: T) => ({ ...s, url: media(s.path) })
+      return json({ ...m, screens: m.screens.map(withUrl), sections: m.sections.map((g) => ({ ...g, screens: g.screens.map(withUrl) })) })
+    },
   )
 
   return server

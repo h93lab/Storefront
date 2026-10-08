@@ -1,6 +1,7 @@
 export * from "./ai"
 export * from "./analysis"
 export * from "./apps"
+export * from "./appllama"
 export * from "./boards"
 export * from "./db"
 export * from "./diff"

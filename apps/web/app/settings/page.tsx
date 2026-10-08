@@ -1,7 +1,8 @@
 import fs from "node:fs/promises"
 import type { Metadata } from "next"
 import { Cron } from "croner"
-import { env, getSettings, mediaUsageBytes } from "@lens/core"
+import { appllamaConnected, appllamaCredits, env, getSettings, mediaUsageBytes, type AppllamaCredits } from "@lens/core"
+import { AppllamaControls, AppllamaToasts } from "@/components/appllama-settings"
 import { CopyButton } from "@/components/copy-button"
 import { DiagnosticsPanel } from "@/components/diagnostics-panel"
 import { PageHeader } from "@/components/page-header"
@@ -45,6 +46,9 @@ const TOOLS = [
   "get_validation",
   "save_validation_metrics",
   "similar_opportunities",
+  "market_search",
+  "market_save",
+  "get_market",
 ]
 
 export default async function SettingsPage() {
@@ -65,6 +69,17 @@ export default async function SettingsPage() {
   } catch {
     nextRun = null
   }
+  const llamaOn = appllamaConnected(settings)
+  let credits: AppllamaCredits | null = null
+  let creditsError: string | null = null
+  if (llamaOn) {
+    try {
+      credits = await appllamaCredits()
+    } catch (e) {
+      creditsError = e instanceof Error ? e.message : String(e)
+    }
+  }
+  const usedToday = settings.appllama.usage.day === new Date().toISOString().slice(0, 10) ? settings.appllama.usage.calls : 0
   const key = settings.ai.apiKey
   const keyHint = key ? `…${key.slice(-4)}` : null
   const embKey = settings.ai.embedding.apiKey
@@ -144,6 +159,45 @@ export default async function SettingsPage() {
           <CardDescription>Optional extra evidence: public posts from the subreddits you choose that match your keywords.</CardDescription>
         </CardHeader>
         <RedditSettingsForm initial={redditInitial} secretHint={rdSecretHint} />
+      </Card>
+
+      <Card id="appllama" className="scroll-mt-20">
+        <CardHeader>
+          <CardTitle>Appllama</CardTitle>
+          <CardDescription>
+            Market data and every screen of the apps you pick, from your own Appllama Pro subscription. No API key: you sign in once.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <AppllamaToasts />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="grid gap-1 text-sm">
+              <span className="flex items-center gap-2 font-medium">
+                {llamaOn ? "Connected" : "Not connected"}
+                <Badge variant={llamaOn ? "secondary" : "outline"}>{llamaOn ? "Active" : "Off"}</Badge>
+              </span>
+              {llamaOn && settings.appllama.connectedAt && (
+                <span className="text-muted-foreground">Connected since {date(settings.appllama.connectedAt)}</span>
+              )}
+              {llamaOn && credits && (
+                <span className="text-muted-foreground tabular-nums">
+                  {credits.remaining.toLocaleString()} credits left this month
+                  {credits.resets_on ? ` (resets ${date(credits.resets_on)})` : ""} · {usedToday} calls made today from here
+                </span>
+              )}
+              {llamaOn && creditsError && <span className="text-destructive">Could not read credits: {creditsError}</span>}
+            </div>
+            <AppllamaControls connected={llamaOn} />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Every Appllama call costs 1 credit. Saving an app costs about 1 + screens / 10 credits. Limits on Pro: 90 calls a minute, 400 a
+            day, 1,500 a month; this app stops at 390 a day.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Appllama&apos;s terms forbid harvesting the catalogue. Save the specific apps you study, do not sweep search results. Images
+            carry a watermark and are for reference only.
+          </p>
+        </CardContent>
       </Card>
 
       <Card>

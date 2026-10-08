@@ -5,7 +5,9 @@ import { notFound } from "next/navigation"
 import { AlertTriangle, ExternalLink, GitCompare, Lightbulb, Star, TrendingDown, TrendingUp } from "lucide-react"
 import {
   activeJobs,
+  estimateCredits,
   getApp,
+  getMarket,
   getChanges,
   getInsights,
   getReviews,
@@ -21,6 +23,8 @@ import {
 import { AnalyseButton } from "@/components/analyse-button"
 import { AppIcon } from "@/components/app-icon"
 import { AppTabs } from "@/components/app-tabs"
+import { MarketRefreshButton } from "@/components/market-refresh"
+import { MarketScreens } from "@/components/market-screens"
 import { ChangesTimeline } from "@/components/changes-timeline"
 import { JobWatcher } from "@/components/job-watcher"
 import { OwnAppSwitch } from "@/components/own-app-switch"
@@ -37,6 +41,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { usd } from "@/lib/market"
 import { boardOptions } from "@/lib/boards"
 import { ago, bytes, compact, COUNTRIES, date, LANGUAGES, storeLabel } from "@/lib/format"
 
@@ -53,7 +59,7 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 export default async function AppPage({ params, searchParams }: Params) {
   const { id } = await params
   const sp = await searchParams
-  const tab = ["screenshots", "reviews", "insights", "changes"].includes(sp.tab ?? "") ? sp.tab! : "overview"
+  const tab = ["screenshots", "market", "screens", "reviews", "insights", "changes"].includes(sp.tab ?? "") ? sp.tab! : "overview"
   // Every query for this page starts at once; each adds a network round trip to the database.
   const limit = Math.min(Number(sp.limit) || 50, 500)
   const rating = (["pos", "neu", "neg"].includes(sp.rating ?? "") ? sp.rating : "all") as RatingFilter
@@ -70,7 +76,12 @@ export default async function AppPage({ params, searchParams }: Params) {
   // Tab queries run alongside the app query; if the page bails out early (not found,
   // still pending) they are simply dropped, so mark them handled.
   for (const pr of [overviewP, screensP, reviewsP, insightsP]) pr?.catch(() => {})
-  const [app, jobs, changes] = await Promise.all([loadApp(id), validId ? activeJobs(id) : [], validId ? getChanges({ appId: id }) : []])
+  const [app, jobs, changes, market] = await Promise.all([
+    loadApp(id),
+    validId ? activeJobs(id) : [],
+    validId ? getChanges({ appId: id }) : [],
+    validId ? getMarket(id) : null,
+  ])
   if (!app) notFound()
   const own = app.own
   // Only a queued or running job means work is happening; a stale status alone does not.
@@ -290,6 +301,143 @@ export default async function AppPage({ params, searchParams }: Params) {
         </EmptyHeader>
       </Empty>
     )
+  } else if ((tab === "market" || tab === "screens") && !market) {
+    body = (
+      <Empty className="border">
+        <EmptyHeader>
+          <EmptyTitle>No market data for this app</EmptyTitle>
+          <EmptyDescription>Save it from Appllama to see revenue, prices and every screen.</EmptyDescription>
+        </EmptyHeader>
+        <Button asChild>
+          <Link href={`/market?q=${encodeURIComponent(name)}`}>Find on Appllama</Link>
+        </Button>
+      </Empty>
+    )
+  } else if (tab === "market" && market) {
+    const p = market.profile as Record<string, any>
+    const seen = new Set<string>()
+    const iaps = ((p.in_app_purchases ?? []) as { title: string; duration: string; price: number | string }[]).filter((i) => {
+      const k = `${i.title}|${i.duration}|${i.price}`
+      if (seen.has(k)) return false
+      seen.add(k)
+      return true
+    })
+    const label = (x: unknown) =>
+      typeof x === "string"
+        ? x
+        : x && typeof x === "object"
+          ? String((x as any).name ?? (x as any).country ?? (x as any).language ?? (x as any).code ?? JSON.stringify(x))
+          : String(x)
+    const share = (x: unknown) => {
+      const v = x && typeof x === "object" ? ((x as any).share ?? (x as any).percentage ?? (x as any).percent) : null
+      return typeof v === "number" ? ` ${v <= 1 ? Math.round(v * 100) : Math.round(v)}%` : ""
+    }
+    const onboarding = market.screens.filter((s) => s.section === "onboarding").length
+    const refreshBusy = jobs.some((j) => (j.type as string) === "market_refresh" || (j.type as string) === "market_save")
+    body = (
+      <>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm text-muted-foreground">
+            From Appllama · fetched {ago(market.fetched_at)} · {market.screens_synced}/{market.screens_count ?? "?"} screens stored
+          </p>
+          <MarketRefreshButton appId={id} estimate={estimateCredits({ screens_count: market.screens_count })} busy={refreshBusy} />
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-5">
+          <StatCard
+            label="Revenue / month"
+            value={p.revenue?.display ?? usd(market.revenue_monthly_usd)}
+            hint={p.revenue?.as_of ? `As of ${p.revenue.as_of}` : undefined}
+          />
+          <StatCard label="Downloads" value={p.downloads?.display ?? compact(market.downloads)} />
+          <StatCard
+            label="Rating"
+            value={market.rating != null ? market.rating.toFixed(2) : "—"}
+            hint={`${compact(market.ratings_count)} ratings`}
+          />
+          <StatCard
+            label="Category rank"
+            value={market.category_rank != null ? `#${market.category_rank}` : "—"}
+            hint={market.category ?? undefined}
+          />
+          <StatCard label="Launched" value={market.launched ? date(market.launched) : "—"} hint={`${onboarding} onboarding steps`} />
+        </div>
+        <div className="grid gap-4 lg:grid-cols-3">
+          <Card className="lg:col-span-2">
+            <CardHeader>
+              <CardTitle>In-app purchases</CardTitle>
+              <CardDescription>
+                {market.prices.monthly != null ? `Cheapest monthly ${usd(market.prices.monthly)}` : "No monthly plan"}
+                {market.prices.annual != null ? ` · annual ${usd(market.prices.annual)}` : ""}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {iaps.length ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Title</TableHead>
+                      <TableHead>Duration</TableHead>
+                      <TableHead className="text-right">Price</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {iaps.map((i, n) => (
+                      <TableRow key={n}>
+                        <TableCell>{i.title}</TableCell>
+                        <TableCell>{i.duration}</TableCell>
+                        <TableCell className="text-right tabular-nums">{typeof i.price === "number" ? usd(i.price) : i.price}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <p className="text-sm text-muted-foreground">No in-app purchases listed.</p>
+              )}
+            </CardContent>
+          </Card>
+          <div className="grid content-start gap-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Top countries</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-wrap gap-1.5">
+                {((p.top_countries ?? []) as unknown[]).map((c, n) => (
+                  <Badge key={n} variant="secondary">
+                    {label(c)}
+                    {share(c)}
+                  </Badge>
+                ))}
+                {!(p.top_countries ?? []).length && <span className="text-sm text-muted-foreground">—</span>}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle>Languages</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-wrap gap-1.5">
+                {((p.languages ?? []) as unknown[]).map((c, n) => (
+                  <Badge key={n} variant="outline">
+                    {label(c)}
+                  </Badge>
+                ))}
+                {!(p.languages ?? []).length && <span className="text-sm text-muted-foreground">—</span>}
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </>
+    )
+  } else if (tab === "screens" && market) {
+    body = market.screens.length ? (
+      <MarketScreens sections={market.sections} appName={name} />
+    ) : (
+      <Empty className="border">
+        <EmptyHeader>
+          <EmptyTitle>No screens stored yet</EmptyTitle>
+          <EmptyDescription>Screens arrive while the save job runs. Use Refresh on the Market tab to fetch them again.</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    )
   } else if (tab === "reviews") {
     const [{ rows, total }, topics, boards] = await reviewsP!
     const report = app.sync_report
@@ -503,6 +651,11 @@ export default async function AppPage({ params, searchParams }: Params) {
             </Link>
           </Button>
           <SyncButton appId={id} busy={syncing} />
+          {!market && (
+            <Button variant="outline" size="sm" asChild>
+              <Link href={`/market?q=${encodeURIComponent(name)}`}>Find on Appllama</Link>
+            </Button>
+          )}
           {app.store_url && (
             <Button variant="secondary" size="sm" asChild>
               <a href={app.store_url} target="_blank" rel="noreferrer">
@@ -515,7 +668,11 @@ export default async function AppPage({ params, searchParams }: Params) {
       </div>
       <JobWatcher appId={id} initial={jobs.map((j) => ({ ...j, run_after: new Date(j.run_after).toISOString() }))} />
       <SyncIssues appId={id} report={app.sync_report} status={app.status} lastError={app.last_error} busy={jobs.length > 0} />
-      <AppTabs tab={tab} counts={{ reviews: app.reviews_count, screenshots: app.screenshots_count, changes: changes.length }}>
+      <AppTabs
+        tab={tab}
+        counts={{ reviews: app.reviews_count, screenshots: app.screenshots_count, changes: changes.length }}
+        market={market ? { screens: market.screens.length } : null}
+      >
         {body}
       </AppTabs>
     </>

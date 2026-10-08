@@ -27,6 +27,22 @@ export interface Settings {
     /** Test override for both the API and the OAuth host. */
     apiBase: string
   }
+  /** Appllama (Market) OAuth connection. Tokens never leave the server: client components only see "connected since". */
+  appllama: {
+    clientId: string
+    clientSecret: string
+    accessToken: string
+    refreshToken: string
+    expiresAt: string | null
+    scope: string
+    connectedAt: string | null
+    /** Local daily call counter (day is YYYY-MM-DD, UTC). */
+    usage: { day: string; calls: number }
+    /** Default "https://mcp.appllama.io/mcp"; tests override. */
+    mcpUrl: string
+  }
+  /** Short-lived state of an OAuth authorisation in flight (PKCE verifier, state, redirect URI). */
+  appllama_pending: { verifier: string; state: string; redirectUri: string; createdAt: string }
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -51,9 +67,21 @@ export const DEFAULT_SETTINGS: Settings = {
     limit: 50,
     apiBase: "",
   },
+  appllama: {
+    clientId: "",
+    clientSecret: "",
+    accessToken: "",
+    refreshToken: "",
+    expiresAt: null,
+    scope: "",
+    connectedAt: null,
+    usage: { day: "", calls: 0 },
+    mcpUrl: "https://mcp.appllama.io/mcp",
+  },
+  appllama_pending: { verifier: "", state: "", redirectUri: "", createdAt: "" },
 }
 
-const KEYS = ["ai", "sync", "score", "reddit"] as const
+const KEYS = ["ai", "sync", "score", "reddit", "appllama", "appllama_pending"] as const
 
 function merge<K extends keyof Settings>(key: K, stored: unknown): Settings[K] {
   const s = (stored && typeof stored === "object" ? stored : {}) as Record<string, unknown>
@@ -73,6 +101,8 @@ export async function getSettings(): Promise<Settings> {
     sync: merge("sync", map.sync),
     score: merge("score", map.score),
     reddit: merge("reddit", map.reddit),
+    appllama: merge("appllama", map.appllama),
+    appllama_pending: merge("appllama_pending", map.appllama_pending),
   }
 }
 

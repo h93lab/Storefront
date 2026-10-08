@@ -79,8 +79,10 @@ const PERMANENT = ["permissions", "single_player", "data_legal"]
 export function GateForm({
   id,
   gate,
+  demandHint,
 }: {
   id: number
+  demandHint?: string
   gate: { checks: Record<string, boolean>; notes?: string; checked_at?: string } | null
 }) {
   const [checks, setChecks] = React.useState<Record<string, boolean>>(() =>
@@ -117,6 +119,7 @@ export function GateForm({
             <div key={g.key} className="flex items-center justify-between gap-4 p-3">
               <Label htmlFor={`gate-${g.key}`} className="leading-snug font-normal">
                 {g.label}
+                {g.key === "demand" && demandHint ? <span className="mt-0.5 block text-xs text-muted-foreground">{demandHint}</span> : null}
               </Label>
               <div className="flex shrink-0 items-center gap-2">
                 <span className="w-10 text-right text-xs font-medium tabular-nums">{checks[g.key] ? "PASS" : "FAIL"}</span>

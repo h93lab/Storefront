@@ -11,6 +11,8 @@ export type JobType =
   | "fetch_reddit"
   | "generate_validation"
   | "embed_labels"
+  | "market_save"
+  | "market_refresh"
 
 export interface Job {
   id: string

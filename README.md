@@ -4,7 +4,7 @@ A private, self-hosted library of App Store and Google Play apps: listings, scre
 
 - **Web UI**: Next.js 16 + [shadcn/ui](https://ui.shadcn.com) (neutral theme, light and dark)
 - **Worker**: syncs every app on a schedule, detects changes, runs the AI analysis
-- **MCP server**: 29 tools over Streamable HTTP, protected by a bearer token
+- **MCP server**: 32 tools over Streamable HTTP, protected by a bearer token
 - **Storage**: data in Supabase Postgres (or local Postgres); images as WebP on your server's disk
 
 ---
@@ -173,6 +173,17 @@ Claude Desktop و Cursor وغيرهم (JSON):
 
 **عرض Outcomes**: في **/opportunities** دوس Outcomes عشان تشوف الفرص اللي اتشحنت أو اتقتلت جنب السكور والـ Gate والـ Validation وأرقام التثبيتات والتجارب والعملاء.
 
+### 11) السوق (Appllama)
+
+صفحة **/market** بتجيب لك بيانات السوق (الإيراد، التحميلات، الأسعار) وكل شاشات التطبيقات اللي بتدرسها، من اشتراكك في Appllama Pro. مفيش API key: بتسجّل دخول مرة واحدة بس.
+
+1. افتح **Settings** ثم كارت **Appllama** واضغط **Connect**. هيفتح لك صفحة Appllama، وافق، وهترجع للمنصة متوصّل (OAuth). الـ redirect بيرجع على `PUBLIC_URL`، فلازم يكون متظبط صح في `.env`.
+2. افتح **/market**، دوّر بوصف التطبيق (مثلًا "habit tracker") وفلتر بالإيراد أو التقييم أو الأسعار، واضغط **Save** على التطبيقات اللي عايز تدرسها بس.
+3. الحفظ بيشتغل في الـ worker: بيحفظ البروفايل وكل الشاشات كصور WebP على السيرفر عندك (لينكات الصور عند Appllama بتنتهي بعد حوالي ساعة). لو التطبيق مش في الـ library بيتضاف تلقائي على iOS.
+4. في صفحة التطبيق هتلاقي تابين: **Market** (إيراد، تحميلات، تقييم، ترتيب، الـ IAP، الدول واللغات) و**Market screens** (الشاشات مقسّمة: welcome، onboarding، paywall، داخل التطبيق، مع الألوان وعناصر الواجهة). صفحة الفرصة بتعرض المنافسين وأسعارهم، والـ spec بياخد السعر من أقرب منافس.
+
+الكريدت: أي نداء لـ Appllama بيخصم 1 كريدت، وحفظ تطبيق بيكلف حوالي `1 + عدد الشاشات / 10`. الحدود على Pro: 90 في الدقيقة، 400 في اليوم، 1500 في الشهر، والمنصة بتقف عند 390 في اليوم. لو التقدير فوق 15 كريدت بيطلب منك تأكيد. **ممنوع الـ harvesting**: شروط Appllama بتمنع سحب الكتالوج كله، فاحفظ تطبيقات محددة بتدرسها بس. الصور عليها watermark وللمرجع فقط. الـ MCP فيه 3 أدوات: `market_search` و`market_save` و`get_market`.
+
 ### التحديث
 
 ```bash
@@ -304,6 +315,14 @@ Optional. **Settings → Embeddings** takes any OpenAI-shaped `/embeddings` endp
 
 `/opportunities?view=outcomes` lists shipped and killed opportunities with status, score, gate result, validation decision, installs, trial starts and paying customers.
 
+### Market (Appllama)
+
+Connect once from Settings → Appllama (OAuth with dynamic client registration and PKCE; no API key). The callback is `${PUBLIC_URL}/api/appllama/callback`, so `PUBLIC_URL` must be reachable from your browser. Tokens stay on the server; the UI only shows "Connected since" and your credit balance.
+
+`/market` searches Appllama (`search_apps`) with filters and shows **Saved** and **In library** badges. **Save** queues a `market_save` job that stores the profile (revenue, downloads, IAP prices, rank, flows) and every screen as local WebP (Appllama media URLs expire in about an hour). A saved app that is not in the library is added as iOS with `store_id` = the Appllama app id, so reviews and market data share one record. The app page gains **Market** and **Market screens** tabs; opportunities show competitor revenue and price, feed the spec and validation prompts, and give the gate's Demand row an auto-check. **Import a board** saves up to 20 apps from an Appllama apps board.
+
+Credits: every call costs 1; a save costs about `1 + screens / 10` (confirmation above 15). Pro limits are 90/min, 400/day and 1,500/month; the client paces itself and refuses at 390 calls a day. Appllama's terms forbid harvesting the catalogue: save apps you study, do not sweep it. Media is watermarked and for reference only. MCP tools: `market_search`, `market_save`, `get_market`.
+
 ### MCP tools
 
 | Tool                                                        | Purpose                                              |
@@ -334,6 +353,9 @@ Optional. **Settings → Embeddings** takes any OpenAI-shaped `/embeddings` endp
 | `get_validation`                                            | Validation kit, metrics and decision                 |
 | `save_validation_metrics`                                   | Save fake-door results; returns the decision         |
 | `similar_opportunities`                                     | Nearest opportunities by embeddings                  |
+| `market_search`                                             | Search Appllama (needs Connect; marks saved apps)    |
+| `market_save`                                               | Queue saving an Appllama app and its screens         |
+| `get_market`                                                | Saved market profile and screens of a library app    |
 
 ### Development
 

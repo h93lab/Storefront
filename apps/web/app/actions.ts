@@ -12,6 +12,13 @@ import {
   type VerdictSource,
   addApp,
   addBoardItem,
+  appllamaBoard,
+  appllamaBoards,
+  appllamaSearch,
+  disconnectAppllama,
+  estimateCredits,
+  getMarket,
+  type AppllamaSearchParams,
   createBoard,
   deleteBoard,
   enqueue,
@@ -440,4 +447,64 @@ export async function saveValidationMetricsAction(
     revalidatePath(`/opportunities/${id}`)
     revalidatePath("/opportunities")
   }, "Metrics saved")
+}
+
+/* ------------------------------------------------------------------ Market */
+
+export async function disconnectAppllamaAction() {
+  return run(async () => {
+    await disconnectAppllama()
+    revalidatePath("/", "layout")
+  }, "Appllama disconnected")
+}
+
+export async function marketSearchAction(params: AppllamaSearchParams) {
+  return run(() => appllamaSearch(params))
+}
+
+export async function appllamaBoardsAction() {
+  return run(() => appllamaBoards())
+}
+
+export async function appllamaBoardAction(boardId: string, cursor?: string) {
+  return run(() => appllamaBoard(boardId, cursor))
+}
+
+/** Queues saving one Appllama app (profile + every screen). Returns the job id and the credit estimate. */
+export async function marketSaveAction(input: {
+  appllamaId: string
+  screens?: boolean
+  screensCount?: number | null
+  appId?: string | null
+}) {
+  return run(async () => {
+    const id = String(input.appllamaId || "").trim()
+    if (!id) throw new Error("Missing Appllama app id")
+    const screens = input.screens !== false
+    const jobId = await enqueue("market_save", { appllamaId: id, screens, ...(input.appId ? { appId: input.appId } : {}) })
+    revalidatePath("/market")
+    return { jobId, estimate: screens ? estimateCredits({ screens_count: input.screensCount }) : 1 }
+  }, "Saving from Appllama")
+}
+
+/** Queues up to 20 apps (screens included). */
+export async function marketSaveManyAction(ids: string[]) {
+  return run(async () => {
+    const list = [...new Set(ids.map((i) => String(i).trim()).filter(Boolean))]
+    if (!list.length) throw new Error("Pick at least one app")
+    if (list.length > 20) throw new Error("At most 20 apps per batch")
+    const jobIds: string[] = []
+    for (const appllamaId of list) jobIds.push(await enqueue("market_save", { appllamaId, screens: true }))
+    revalidatePath("/market")
+    return { queued: jobIds.length }
+  }, "Saving from Appllama")
+}
+
+export async function marketRefreshAction(appId: string) {
+  return run(async () => {
+    const m = await getMarket(appId)
+    if (!m) throw new Error("This app has no market data yet")
+    const jobId = await enqueue("market_refresh", { appId })
+    return { jobId, estimate: estimateCredits({ screens_count: m.screens_count }) }
+  }, "Refresh queued")
 }
