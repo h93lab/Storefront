@@ -21,6 +21,8 @@ import {
   isTransient,
   MAX_ATTEMPTS,
   pollBatches,
+  refreshMarketApp,
+  saveMarketApp,
   queueReanalysis,
   recomputeCentroids,
   requeueStale,
@@ -139,6 +141,21 @@ async function run(job: Job, signal: AbortSignal): Promise<string> {
       const r = await embedLabels({ log: (m) => log(m, { job: job.id }), signal })
       const centroids = await recomputeCentroids()
       return `${r.embedded} labels embedded · ${centroids} opportunity centroids updated`
+    }
+    case "market_save": {
+      const appllamaId = String(job.payload.appllamaId ?? "")
+      if (!appllamaId) throw new Error("market_save needs an appllamaId")
+      const r = await saveMarketApp(appllamaId, {
+        screens: job.payload.screens === false ? false : undefined,
+        log: (m) => log(m, { job: job.id, appllamaId }),
+        onProgress,
+        signal,
+      })
+      return `Market app saved: ${r.screens} screens stored · ${r.creditsSpent} credits spent`
+    }
+    case "market_refresh": {
+      const r = await refreshMarketApp(appId, { log: (m) => log(m, { job: job.id, appId }), onProgress, signal })
+      return `Market data refreshed: ${r.screens} screens stored · ${r.creditsSpent} credits spent`
     }
     default:
       throw new Error(`Unknown job type ${job.type}`)

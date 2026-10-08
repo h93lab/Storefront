@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Search,
   Settings,
+  Store,
 } from "lucide-react"
 import { toast } from "sonner"
 import { syncAllAction } from "@/app/actions"
@@ -97,6 +98,7 @@ export function CommandMenu({ apps, reviewCount }: { apps: CommandApp[]; reviewC
               ["/apps", "Library", Library],
               ["/boards", "Boards", Bookmark],
               ["/opportunities", "Opportunities", Lightbulb],
+              ["/market", "Market", Store],
               ["/import", "Import", ClipboardPaste],
               ["/review", "Review", ListChecks],
               ["/compare", "Compare", GitCompare],

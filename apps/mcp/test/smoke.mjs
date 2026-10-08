@@ -16,7 +16,7 @@ assert(bad.status === 401, "rejects requests without a token")
 const client = new Client({ name: "smoke", version: "1" })
 await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }))
 const { tools } = await client.listTools()
-assert(tools.length === 29, `lists ${tools.length} tools`)
+assert(tools.length === 32, `lists ${tools.length} tools`)
 const call = async (name, args = {}) => {
   const r = await client.callTool({ name, arguments: args })
   let data = null
@@ -113,6 +113,12 @@ const { data: sim } = await call("similar_opportunities", { opportunity_id: oid 
 assert(Array.isArray(sim), "similar_opportunities returns an array")
 const { r: noOpp } = await call("get_opportunity", { opportunity_id: 999999 })
 assert(noOpp.isError, "unknown opportunity returns a tool error")
+const { r: ms } = await call("market_search", { query: "habit" })
+assert(ms.isError && /not connected/i.test(ms.content[0].text), "market_search errors when Appllama is not connected")
+const { r: mk } = await call("market_save", { appllama_id: "123" })
+assert(mk.isError && /not connected/i.test(mk.content[0].text), "market_save errors when Appllama is not connected")
+const { r: gm } = await call("get_market", { app_id: id })
+assert(gm.isError, "get_market errors when the app has no market row")
 await client.close()
 
 const viaPath = await fetch(`${url}/${token}`, {

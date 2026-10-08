@@ -23,6 +23,8 @@ const LABEL: Record<string, string> = {
   generate_spec: "Writing the spec",
   generate_validation: "Writing the validation kit",
   fetch_reddit: "Fetching Reddit posts",
+  market_save: "Saving from Appllama",
+  market_refresh: "Refreshing from Appllama",
 }
 
 /**

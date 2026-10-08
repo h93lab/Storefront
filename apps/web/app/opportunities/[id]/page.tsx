@@ -8,7 +8,10 @@ import { OpportunityHeader } from "@/components/opportunity-header"
 import { GateForm, NotesCard, OutcomeForm, SpecPanel, ValidationPanel } from "@/components/opportunity-panels"
 import { OpportunityTabs } from "@/components/opportunity-tabs"
 import { StatCard } from "@/components/stat-card"
+import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
+import { compact } from "@/lib/format"
+import { usd } from "@/lib/market"
 import { SIGNAL_LABEL } from "@/lib/opportunities"
 
 type Params = { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | undefined>> }
@@ -43,8 +46,16 @@ export default async function OpportunityPage({ params, searchParams }: Params) 
   const sig = opp.signals
   const signalTotal = sig.paying_competitor + sig.churned + sig.workaround + sig.stated_wtp
 
+  let demandText = "auto-check: unknown"
+  if (opp.gate_hints.demand === "pass") {
+    const weak = opp.market.find((m) => (m.ratings_count ?? 0) >= 1000 && m.rating !== null && m.rating <= 3.8)
+    demandText = weak
+      ? `auto-check: pass — ${weak.name} has ${compact(weak.ratings_count)} ratings at ${weak.rating?.toFixed(1)}★`
+      : `auto-check: pass — ${opp.n} pieces of evidence across ${opp.listings} listings`
+  }
+
   let body: React.ReactNode
-  if (tab === "gate") body = <GateForm key={iso(opp.updated_at)} id={opp.id} gate={opp.gate} />
+  if (tab === "gate") body = <GateForm key={iso(opp.updated_at)} id={opp.id} gate={opp.gate} demandHint={demandText} />
   else if (tab === "spec")
     body = <SpecPanel id={opp.id} label={opp.label} spec={opp.spec_md} generatedAt={iso(opp.spec_generated_at)} busy={specBusy} />
   else if (tab === "validation")
@@ -98,6 +109,22 @@ export default async function OpportunityPage({ params, searchParams }: Params) 
           {opp.competitors.map((c) => (
             <Badge key={c.name} variant="outline">
               {c.name} <span className="tabular-nums opacity-60">{c.count}</span>
+            </Badge>
+          ))}
+        </div>
+      )}
+      {opp.market.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-xs text-muted-foreground">Competitors in market</span>
+          {opp.market.map((m) => (
+            <Badge key={m.app_id} variant="secondary" asChild>
+              <Link href={`/apps/${m.app_id}?tab=market`}>
+                {m.name}
+                <span className="tabular-nums opacity-70">
+                  {m.revenue_monthly_usd != null ? ` ${usd(m.revenue_monthly_usd)}/mo` : ""}
+                  {m.monthly_price != null ? ` · ${usd(m.monthly_price)}/mo plan` : ""}
+                </span>
+              </Link>
             </Badge>
           ))}
         </div>

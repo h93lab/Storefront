@@ -14,6 +14,8 @@ pnpm monorepo (Node 22, pnpm 10). Personal, self-hosted app-store reference libr
 - pgvector objects (`label_embeddings`, `opportunities.centroid`) are optional and guarded. Check `to_regclass('label_embeddings')` before touching them and keep every feature working without them.
 - Score weights come from Settings (`settings.score`). Change the formula in both `opportunityScore()` and `statsSelect`, and keep them fed from the same weights.
 - Google Play apps are one row per `store_id` (reviews are not per country); iOS may be tracked per country. Count listings per `(store, store_id)`, never per app row.
+- `packages/core/src/appllama.ts` owns the Appllama OAuth flow and the paced MCP client. Never log or return tokens or the client secret (settings key `appllama`); client components only get booleans, dates and numbers. Every Appllama call costs a credit, so keep calls deliberate and never loop over the catalogue.
+- Appllama media URLs expire in about an hour: download screens immediately in `saveMarketApp` and serve them from `MEDIA_DIR` via `mediaSrc`. Market saves are worker jobs (`market_save`, `market_refresh`); the web only enqueues.
 
 Checks before pushing: `pnpm format:check && pnpm typecheck && TEST_DATABASE_URL=… pnpm test && pnpm build`.
 
