@@ -22,7 +22,7 @@ services:
     build: { context: ., target: web }
     image: storefront-lens-web
     ports:
-      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
 
   worker:
     <<: *app
@@ -43,7 +43,7 @@ services:
     working_dir: /app/apps/mcp
     command: ["node_modules/.bin/tsx", "src/index.ts"]
     ports:
-      - "127.0.0.1:${MCP_PORT_HOST:-3001}:3001"
+      - "${BIND_ADDRESS:-127.0.0.1}:${MCP_PORT_HOST:-3001}:3001"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
