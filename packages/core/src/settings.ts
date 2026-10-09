@@ -41,6 +41,16 @@ export interface Settings {
     /** Default "https://mcp.appllama.io/mcp"; tests override. */
     mcpUrl: string
   }
+  /** Single-user login (see auth.ts). Never sent to client components: they only get derived data. */
+  auth: {
+    /** "scrypt$<saltB64>$<hashB64>"; empty until /setup has run. */
+    passwordHash: string
+    /** ISO time of the last password change; sessions carry it as their epoch, so bumping it signs everyone out. */
+    passwordSetAt: string | null
+    devices: { id: string; name: string; pinHash: string; createdAt: string; lastUsedAt: string | null; failed: number }[]
+    /** Password attempts (single user, so one global counter). */
+    failed: { count: number; until: string | null }
+  }
   /** Short-lived state of an OAuth authorisation in flight (PKCE verifier, state, redirect URI). */
   appllama_pending: { verifier: string; state: string; redirectUri: string; createdAt: string }
 }
@@ -78,10 +88,11 @@ export const DEFAULT_SETTINGS: Settings = {
     usage: { day: "", calls: 0 },
     mcpUrl: "https://mcp.appllama.io/mcp",
   },
+  auth: { passwordHash: "", passwordSetAt: null, devices: [], failed: { count: 0, until: null } },
   appllama_pending: { verifier: "", state: "", redirectUri: "", createdAt: "" },
 }
 
-const KEYS = ["ai", "sync", "score", "reddit", "appllama", "appllama_pending"] as const
+const KEYS = ["ai", "sync", "score", "reddit", "appllama", "auth", "appllama_pending"] as const
 
 function merge<K extends keyof Settings>(key: K, stored: unknown): Settings[K] {
   const s = (stored && typeof stored === "object" ? stored : {}) as Record<string, unknown>
@@ -102,6 +113,7 @@ export async function getSettings(): Promise<Settings> {
     score: merge("score", map.score),
     reddit: merge("reddit", map.reddit),
     appllama: merge("appllama", map.appllama),
+    auth: merge("auth", map.auth),
     appllama_pending: merge("appllama_pending", map.appllama_pending),
   }
 }

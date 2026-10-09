@@ -1,19 +1,12 @@
 import Link from "next/link"
-import { Button } from "@/components/ui/button"
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
 
-export default function NotFound() {
+export default function RootNotFound() {
   return (
-    <Empty className="border">
-      <EmptyHeader>
-        <EmptyTitle>Page not found</EmptyTitle>
-        <EmptyDescription>This page may have been removed.</EmptyDescription>
-      </EmptyHeader>
-      <EmptyContent>
-        <Button asChild>
-          <Link href="/apps">Back to library</Link>
-        </Button>
-      </EmptyContent>
-    </Empty>
+    <main className="flex min-h-svh flex-col items-center justify-center gap-2 p-4 text-center">
+      <h1 className="text-lg font-semibold">Page not found</h1>
+      <Link href="/" className="text-sm text-muted-foreground underline underline-offset-4">
+        Back to Storefront Lens
+      </Link>
+    </main>
   )
 }

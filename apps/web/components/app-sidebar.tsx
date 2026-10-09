@@ -12,9 +12,11 @@ import {
   Lightbulb,
   Store,
   Library,
+  LogOut,
   Settings,
   Smartphone,
 } from "lucide-react"
+import { logoutAction } from "@/app/auth-actions"
 import {
   Sidebar,
   SidebarContent,
@@ -97,8 +99,20 @@ export function AppSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter className="px-4 pb-4 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
-        Data from the public App Store and Google Play listings.
+      <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <form action={logoutAction}>
+              <SidebarMenuButton type="submit" tooltip="Log out">
+                <LogOut />
+                <span>Log out</span>
+              </SidebarMenuButton>
+            </form>
+          </SidebarMenuItem>
+        </SidebarMenu>
+        <p className="px-2 pb-2 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
+          Data from the public App Store and Google Play listings.
+        </p>
       </SidebarFooter>
     </Sidebar>
   )

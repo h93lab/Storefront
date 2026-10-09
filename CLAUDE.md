@@ -16,6 +16,8 @@ pnpm monorepo (Node 22, pnpm 10). Personal, self-hosted app-store reference libr
 - Google Play apps are one row per `store_id` (reviews are not per country); iOS may be tracked per country. Count listings per `(store, store_id)`, never per app row.
 - `packages/core/src/appllama.ts` owns the Appllama OAuth flow and the paced MCP client. Never log or return tokens or the client secret (settings key `appllama`); client components only get booleans, dates and numbers. Every Appllama call costs a credit, so keep calls deliberate and never loop over the catalogue.
 - Appllama media URLs expire in about an hour: download screens immediately in `saveMarketApp` and serve them from `MEDIA_DIR` via `mediaSrc`. Market saves are worker jobs (`market_save`, `market_refresh`); the web only enqueues.
+- Login: `apps/web/proxy.ts` only verifies the `lens_session` signature and expiry (no database; it must not import `@lens/core`, which pulls in `postgres`). The epoch check (`authEpoch()` vs the cookie) happens in `app/(app)/layout.tsx` through `requireSession()` in `lib/auth-server.ts`. Session signing/verification is Web Crypto only in `lib/session.ts` so the proxy can use it.
+- The `auth` settings key (scrypt hashes, devices, lockout counters) never reaches a client component: pass derived data only (see the Security card). Logic lives in `packages/core/src/auth.ts`; `SESSION_SECRET` (32+ chars) is required by the web app. `/login` and `/setup` use `app/(auth)/layout.tsx`; app pages live in the `app/(app)/` route group (URLs unchanged), and `app/api/**` and `app/media/**` stay outside it.
 
 Checks before pushing: `pnpm format:check && pnpm typecheck && TEST_DATABASE_URL=… pnpm test && pnpm build`.
 

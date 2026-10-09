@@ -32,6 +32,7 @@ git clone https://github.com/h93lab/Storefront.git storefront-lens
 cd storefront-lens
 cp .env.example .env
 openssl rand -hex 32   # حط الناتج في MCP_TOKEN
+openssl rand -hex 32   # ونفّذه تاني وحط الناتج في SESSION_SECRET
 ```
 
 افتح `.env` واملا:
@@ -42,6 +43,7 @@ openssl rand -hex 32   # حط الناتج في MCP_TOKEN
 | `PUBLIC_URL`              | دومين الواجهة، مثلًا `https://lens.example.com`             |
 | `PUBLIC_MCP_URL`          | دومين الـ MCP، مثلًا `https://mcp.example.com/mcp`          |
 | `MCP_TOKEN`               | الناتج من `openssl rand -hex 32`                            |
+| `SESSION_SECRET`          | مطلوب. ناتج `openssl rand -hex 32` تاني (32 حرف على الأقل)  |
 | `CLOUDFLARE_TUNNEL_TOKEN` | من الخطوة 4                                                 |
 | `TZ`                      | المنطقة الزمنية لميعاد التحديث اليومي، مثلًا `Africa/Cairo` |
 
@@ -81,7 +83,13 @@ docker compose --profile tunnel up -d
 
 - **الواجهة**: Zero Trust → **Access** → **Applications** → **Add an application** → **Self-hosted** → الدومين `lens.example.com` → Policy: **Allow** لإيميلك بس.
 - **الـ MCP**: ماتحطش عليه Cloudflare Access، لأن الـ AI clients مش هتعرف تعدّي شاشة الدخول. هو محمي بالـ `MCP_TOKEN`.
-- اختياري: `BASIC_AUTH_USER` و `BASIC_AUTH_PASSWORD` في `.env` بيضيفوا باسورد تاني على الواجهة.
+- **تسجيل الدخول**: الواجهة ليها صفحة دخول بباسورد واحد (مفيش popup). أول مرة تفتح الواجهة هتحوّلك لصفحة `/setup` تختار فيها الباسورد (8 حروف على الأقل)، وبعدها بتدخل بيه من `/login`. لازم `SESSION_SECRET` يكون متظبط في `.env`، لو ناقص أو أقل من 32 حرف الواجهة بترفض تفتح وبتقول ليه.
+- **Remember me** بيخلّي الجلسة 30 يوم، من غيره 12 ساعة. تغيير الباسورد من **Settings → Security** بيطلّع كل الجلسات التانية.
+- **PIN لكل جهاز**: من **Settings → Security** فعّل PIN من 6 أرقام على الجهاز اللي معاك، وبعدها صفحة الدخول على الجهاز ده بتسألك عن الـ PIN الأول. لو الجهاز اتفقد شيله من نفس الجدول. 5 PIN غلط بيمسحوا الـ PIN بتاع الجهاز تلقائيًا.
+- **القفل**: 5 باسوردات غلط بيقفلوا الدخول دقيقة، وبعدها المدة بتتضاعف لحد 15 دقيقة. الباسورد الصح بيصفّر العدّاد.
+- **تسجيل الخروج** من آخر القايمة الجانبية أو من Settings → Security.
+- الـ MCP لسه بالـ `MCP_TOKEN` زي ما هو، ومش بيتأثر بالباسورد.
+- لسه يُنصح بـ Cloudflare Access كطبقة خارجية فوق صفحة الدخول.
 
 ### 6) الـ AI
 
@@ -315,6 +323,12 @@ Optional. **Settings → Embeddings** takes any OpenAI-shaped `/embeddings` endp
 
 `/opportunities?view=outcomes` lists shipped and killed opportunities with status, score, gate result, validation decision, installs, trial starts and paying customers.
 
+### Login
+
+The web UI sits behind a single-user login (the MCP server keeps its bearer token). On first run every page redirects to `/setup`, where you choose the password (8+ characters); after that `/login` asks for it. Sessions are signed `lens_session` cookies (HMAC-SHA256 with `SESSION_SECRET`, httpOnly, `SameSite=Lax`, `Secure` when `PUBLIC_URL` is https): 12 hours, or 30 days with "Remember me". The web app refuses requests while `SESSION_SECRET` is missing or shorter than 32 characters.
+
+The password and PIN hashes (scrypt) live in the `auth` settings key and never reach the browser. Changing the password bumps `passwordSetAt`, which signs every other session out. **Settings → Security** also enables a 6-digit PIN per device (`lens_device` cookie, 180 days): `/login` then shows the PIN form first. Five wrong PINs delete that device's PIN. Five wrong passwords lock the login for 1 minute, doubling per further failure up to 15 minutes. `/api/health` stays open; `/media/*` and other API routes answer 401 without a session. Cloudflare Access is still recommended as an outer layer.
+
 ### Market (Appllama)
 
 Connect once from Settings → Appllama (OAuth with dynamic client registration and PKCE; no API key). The callback is `${PUBLIC_URL}/api/appllama/callback`, so `PUBLIC_URL` must be reachable from your browser. Tokens stay on the server; the UI only shows "Connected since" and your credit balance.
@@ -385,19 +399,19 @@ Adding shadcn components: `cd apps/web && npx shadcn@latest add <component>` (se
 
 ### Environment variables
 
-| Variable                                 | Used by       | Notes                                                                                                          |
-| ---------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                           | all           | Postgres URL. SSL is required automatically for non-local hosts (`DATABASE_SSL=disable\|require` to override). |
-| `MEDIA_DIR`                              | all           | Set to `/data/media` in the containers                                                                         |
-| `PUBLIC_URL`                             | mcp           | Base for absolute image links returned by MCP tools                                                            |
-| `PUBLIC_MCP_URL`, `MCP_TOKEN`            | web, mcp      | Shown on the Settings page; `MCP_TOKEN` must be at least 24 characters                                         |
-| `TZ`                                     | worker, web   | Time zone for the cron schedule                                                                                |
-| `BASIC_AUTH_USER`, `BASIC_AUTH_PASSWORD` | web           | Optional extra login                                                                                           |
-| `CLOUDFLARE_TUNNEL_TOKEN`                | cloudflared   | Only with `--profile tunnel`                                                                                   |
-| `DATABASE_BACKUP_URL`                    | backup script | Session-pooler URL for `pg_dump`                                                                               |
-| `DATABASE_POOL_SIZE`                     | all           | Connections per process (default 10)                                                                           |
-| `WORKER_CONCURRENCY`                     | worker        | Jobs run at once (default 2)                                                                                   |
-| `WORKER_JOB_TIMEOUT_MS`                  | worker        | A job running longer is failed and retried (default 15 min)                                                    |
+| Variable                      | Used by       | Notes                                                                                                          |
+| ----------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                | all           | Postgres URL. SSL is required automatically for non-local hosts (`DATABASE_SSL=disable\|require` to override). |
+| `MEDIA_DIR`                   | all           | Set to `/data/media` in the containers                                                                         |
+| `PUBLIC_URL`                  | mcp           | Base for absolute image links returned by MCP tools                                                            |
+| `PUBLIC_MCP_URL`, `MCP_TOKEN` | web, mcp      | Shown on the Settings page; `MCP_TOKEN` must be at least 24 characters                                         |
+| `TZ`                          | worker, web   | Time zone for the cron schedule                                                                                |
+| `SESSION_SECRET`              | web           | Required. At least 32 characters (`openssl rand -hex 32`); signs the login cookies                             |
+| `CLOUDFLARE_TUNNEL_TOKEN`     | cloudflared   | Only with `--profile tunnel`                                                                                   |
+| `DATABASE_BACKUP_URL`         | backup script | Session-pooler URL for `pg_dump`                                                                               |
+| `DATABASE_POOL_SIZE`          | all           | Connections per process (default 10)                                                                           |
+| `WORKER_CONCURRENCY`          | worker        | Jobs run at once (default 2)                                                                                   |
+| `WORKER_JOB_TIMEOUT_MS`       | worker        | A job running longer is failed and retried (default 15 min)                                                    |
 
 ### Using a local database instead of Supabase
 

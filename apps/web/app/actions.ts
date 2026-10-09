@@ -1,6 +1,7 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import { getSession } from "@/lib/auth-server"
 import {
   aiConfigured,
   deleteVerdict,
@@ -47,6 +48,8 @@ import {
 export type ActionResult<T = undefined> = { ok: true; data?: T; message?: string } | { ok: false; error: string }
 
 const run = async <T>(fn: () => Promise<T>, message?: string): Promise<ActionResult<T>> => {
+  // The proxy only checks the cookie signature; this also rejects sessions from before a password change.
+  if (!(await getSession())) return { ok: false, error: "Your session has expired. Sign in again." }
   try {
     return { ok: true, data: await fn(), message }
   } catch (e) {
