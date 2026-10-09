@@ -406,6 +406,8 @@ Adding shadcn components: `cd apps/web && npx shadcn@latest add <component>` (se
 | `PUBLIC_URL`                  | mcp           | Base for absolute image links returned by MCP tools                                                            |
 | `PUBLIC_MCP_URL`, `MCP_TOKEN` | web, mcp      | Shown on the Settings page; `MCP_TOKEN` must be at least 24 characters                                         |
 | `TZ`                          | worker, web   | Time zone for the cron schedule                                                                                |
+| `BIND_ADDRESS`                | compose       | Host address the web and MCP ports are published on (default `127.0.0.1`; e.g. a LAN IP)                       |
+| `WEB_PORT`, `MCP_PORT_HOST`   | compose       | Host ports for the web UI and MCP server (default 3000, 3001)                                                  |
 | `SESSION_SECRET`              | web           | Required. At least 32 characters (`openssl rand -hex 32`); signs the login cookies                             |
 | `CLOUDFLARE_TUNNEL_TOKEN`     | cloudflared   | Only with `--profile tunnel`                                                                                   |
 | `DATABASE_BACKUP_URL`         | backup script | Session-pooler URL for `pg_dump`                                                                               |
