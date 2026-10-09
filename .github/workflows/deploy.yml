@@ -1,0 +1,78 @@
+name: Deploy
+
+# Deploys main to the server after CI passes on it, or on demand from the Actions tab.
+# Off until the repository variable DEPLOY_ENABLED is "true".
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      vars.DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    environment: Storefront
+    timeout-minutes: 30
+    steps:
+      # The server is only reachable on the LAN / tailnet, so the runner joins the tailnet first.
+      - name: Join tailnet
+        if: vars.DEPLOY_VIA_TAILSCALE != 'false'
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: SSH setup
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -T 15 "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Pull, rebuild, restart
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "DEPLOY_PATH='$DEPLOY_PATH' SHA='$SHA' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          # Sessions need a stable secret; create one once if the server never had it.
+          if ! grep -qE '^SESSION_SECRET=.{32,}' .env; then
+            sed -i '/^SESSION_SECRET=/d' .env
+            echo "SESSION_SECRET=$(openssl rand -hex 32)" >> .env
+            echo "Generated SESSION_SECRET"
+          fi
+          git fetch --quiet origin main
+          git checkout --quiet main
+          git merge --ff-only --quiet "$SHA"
+          echo "Deploying $(git rev-parse --short HEAD)"
+          docker compose -p storefront up -d --build --remove-orphans
+          for i in $(seq 1 45); do
+            if docker compose -p storefront exec -T web node -e \
+              "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+              echo "Healthy"
+              docker image prune -f >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -p storefront ps
+          docker compose -p storefront logs --tail 80 web worker
+          exit 1
+          REMOTE
