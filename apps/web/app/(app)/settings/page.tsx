@@ -1,17 +1,28 @@
 import fs from "node:fs/promises"
 import type { Metadata } from "next"
 import { Cron } from "croner"
-import { appllamaConnected, appllamaCredits, env, getSettings, mediaUsageBytes, type AppllamaCredits } from "@lens/core"
+import {
+  appllamaConnected,
+  appllamaCredits,
+  env,
+  getSettings,
+  listDevices,
+  mediaUsageBytes,
+  passwordConfigured,
+  type AppllamaCredits,
+} from "@lens/core"
 import { AppllamaControls, AppllamaToasts } from "@/components/appllama-settings"
 import { CopyButton } from "@/components/copy-button"
 import { DiagnosticsPanel } from "@/components/diagnostics-panel"
 import { PageHeader } from "@/components/page-header"
+import { SecurityCard } from "@/components/security-card"
 import { AiSettingsForm, EmbeddingSettingsForm, RedditSettingsForm, ScoreSettingsForm, SyncSettingsForm } from "@/components/settings-forms"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
+import { deviceCookie } from "@/lib/auth-server"
 import { bytes, date } from "@/lib/format"
 
 export const metadata: Metadata = { title: "Settings" }
@@ -53,6 +64,7 @@ const TOOLS = [
 
 export default async function SettingsPage() {
   const settings = await getSettings()
+  const [devices, passwordSet, thisDevice] = await Promise.all([listDevices(), passwordConfigured(), deviceCookie()])
   const used = await mediaUsageBytes()
   let disk: { total: number; free: number } | null = null
   try {
@@ -99,7 +111,7 @@ export default async function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" description="AI provider, MCP access, sync schedule and diagnostics." />
+      <PageHeader title="Settings" description="Security, AI provider, MCP access, sync schedule and diagnostics." />
 
       <Card id="diagnostics" className="scroll-mt-20">
         <CardHeader>
@@ -109,6 +121,18 @@ export default async function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <DiagnosticsPanel />
+      </Card>
+
+      <Card id="security" className="scroll-mt-20">
+        <CardHeader>
+          <CardTitle>Security</CardTitle>
+          <CardDescription>Your password, the PINs set up on your devices, and signing out.</CardDescription>
+        </CardHeader>
+        <SecurityCard
+          passwordSet={passwordSet}
+          devices={devices.map((d) => ({ ...d, current: d.id === thisDevice }))}
+          hasPinHere={devices.some((d) => d.id === thisDevice)}
+        />
       </Card>
 
       <Card>
