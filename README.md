@@ -200,6 +200,12 @@ git pull && docker compose up -d --build
 
 الـ migrations بتتطبق لوحدها.
 
+**تحديث تلقائي (GitHub Actions):** `.github/workflows/deploy.yml` بيعمل deploy بعد ما الـ CI ينجح على `main`، أو يدويًا من تبويب Actions. محتاج:
+- في environment اسمه `Storefront`: `DEPLOY_HOST` و`DEPLOY_USER` و`DEPLOY_KEY` (مفتاح SSH خاص) و`DEPLOY_PATH`، و`TS_OAUTH_CLIENT_ID` و`TS_OAUTH_SECRET` (Tailscale OAuth client بـ tag `tag:ci`، لأن السيرفر مش مكشوف على الإنترنت).
+- متغير repository اسمه `DEPLOY_ENABLED=true` لتشغيله (ولو السيرفر مكشوف مباشرة: `DEPLOY_VIA_TAILSCALE=false`).
+
+الـ workflow بيولّد `SESSION_SECRET` لو مش موجود، وبيعمل `up -d --build` ويستنى `/api/health`.
+
 ### لو في مشكلة: التشخيص
 
 افتح **Settings → Diagnostics** ودوس **Run diagnostics**. ولو المشكلة في تطبيق معين، الزق اللينك بتاعه الأول. هيختبر من السيرفر نفسه:
