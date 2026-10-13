@@ -143,6 +143,31 @@ Rules:
 
 const GROUP_BATCH = 120
 
+/**
+ * The existing opportunities worth showing the model for one batch: those sharing the most words with the batch's
+ * labels, rarer words counting more. Sending every opportunity made each prompt ~70k tokens (2.5k opportunities),
+ * which is slow and costly; the model can only map a label to an opportunity it was shown.
+ * shortcut: lexical overlap, so a synonym with no shared word becomes a new opportunity; use embeddings if that bites.
+ */
+export function candidateOpportunities<T extends { label: string }>(existing: T[], batch: { label: string }[], cap = 150): T[] {
+  const words = (s: string) => new Set(s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])
+  const docs = existing.map((e) => words(e.label))
+  const df = new Map<string, number>()
+  for (const d of docs) for (const w of d) df.set(w, (df.get(w) ?? 0) + 1)
+  const wanted = new Set<string>()
+  for (const b of batch) for (const w of words(b.label)) wanted.add(w)
+  return existing
+    .map((e, i) => {
+      let score = 0
+      for (const w of docs[i]) if (wanted.has(w)) score += Math.log(1 + existing.length / df.get(w)!)
+      return { e, score }
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, cap)
+    .map((x) => x.e)
+}
+
 /** Distinct lowercased complaint/request labels (reviews and items) that no opportunity owns yet. */
 const unmappedRel = (sql: Sql) => sql`
   select l.label, sum(l.n)::int as count, (array_agg(l.kind order by l.n desc))[1] as kind
@@ -325,14 +350,15 @@ export async function groupLabels(
     opts.signal?.throwIfAborted()
     const batch = unmapped.slice(i, i + size)
     // Reloaded per batch so later batches can join opportunities created by earlier ones.
-    const existing = await sql<{ id: number; label: string }[]>`select id::int, label from opportunities order by id`
+    const all = await sql<{ id: number; label: string }[]>`select id::int, label from opportunities order by id`
+    const existing = candidateOpportunities(all, batch)
     const text = await chat(
       settings.ai,
       [
         { role: "system", content: GROUP_SYSTEM },
         { role: "user", content: JSON.stringify({ existing, labels: batch }) },
       ],
-      { json: true, maxTokens: 8000 },
+      { json: true, maxTokens: 8000, timeoutMs: 240_000 },
     )
     let reply: unknown = null
     try {
