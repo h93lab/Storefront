@@ -4,6 +4,7 @@ import { env } from "./env"
 export type Sql = postgres.Sql
 
 let client: Sql | undefined
+let stopWatch: (() => void) | undefined
 
 function sslFor(url: string): postgres.Options<{}>["ssl"] {
   const mode = process.env.DATABASE_SSL
@@ -13,22 +14,54 @@ function sslFor(url: string): postgres.Options<{}>["ssl"] {
   return ["localhost", "127.0.0.1", "db", "postgres"].includes(host) ? false : "require"
 }
 
+/**
+ * A pooled connection can wedge (the pooler takes a query and never answers) and postgres.js has no query timeout,
+ * so one wedged pool leaves every page that reads the database hanging forever. A periodic `select 1` notices;
+ * after `fails` misses in a row the pool is destroyed (pending queries reject) and the next db() builds a fresh one.
+ */
+export function watchPool(c: Sql, onReset: () => void, { everyMs = 30_000, timeoutMs = 8_000, fails = 2 } = {}) {
+  let misses = 0
+  const timer = setInterval(async () => {
+    let t: NodeJS.Timeout | undefined
+    const ok = await Promise.race([
+      c`select 1`.then(() => true, () => false),
+      new Promise<boolean>((r) => (t = setTimeout(() => r(false), timeoutMs))),
+    ])
+    clearTimeout(t)
+    misses = ok ? 0 : misses + 1
+    if (misses < fails) return
+    clearInterval(timer)
+    console.error(`[db] pool unresponsive for ${misses} probes, resetting it`)
+    onReset()
+    c.end({ timeout: 0 }).catch(() => {})
+  }, everyMs)
+  timer.unref()
+  return () => clearInterval(timer)
+}
+
 /** Shared connection pool. `prepare: false` keeps it compatible with the Supabase transaction pooler. */
 export function db(): Sql {
   if (!client) {
     const url = env.databaseUrl
-    client = postgres(url, {
+    const c = postgres(url, {
       prepare: false,
       ssl: sslFor(url),
       max: Number(process.env.DATABASE_POOL_SIZE ?? 10),
       idle_timeout: 20,
+      connect_timeout: 10,
       onnotice: () => {},
+    })
+    client = c
+    stopWatch = watchPool(c, () => {
+      if (client === c) client = undefined
     })
   }
   return client
 }
 
 export async function closeDb() {
+  stopWatch?.()
+  stopWatch = undefined
   if (client) {
     await client.end({ timeout: 5 })
     client = undefined
