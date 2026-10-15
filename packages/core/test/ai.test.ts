@@ -101,7 +101,7 @@ describe("Anthropic provider", () => {
     expect(body.system).toEqual([{ type: "text", text: "SYSTEM PROMPT", cache_control: { type: "ephemeral" } }])
     expect(body.messages).toEqual([{ role: "user", content: "hello" }])
     expect(body.temperature).toBeUndefined()
-    expect(body.thinking).toBeUndefined()
+    expect(body.thinking).toEqual({ type: "disabled" })
   })
 
   it("asks for JSON only when json is set, and works with testConnection", async () => {

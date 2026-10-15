@@ -153,6 +153,9 @@ const safeHost = (u: string) => {
 
 const JSON_SUFFIX = "\n\nRespond with JSON only."
 
+/** Newer models think by default and can spend all of max_tokens on it, returning no text at all. */
+const NO_THINKING = { type: "disabled" as const }
+
 const cachedSystem = (text: string) => [{ type: "text" as const, text, cache_control: { type: "ephemeral" as const } }]
 
 /**
@@ -178,6 +181,7 @@ async function chatAnthropic(cfg: Settings["ai"], messages: ChatMessage[], opts:
     response = await client.messages.create({
       model: cfg.model,
       max_tokens: opts.maxTokens ?? 4000,
+      thinking: NO_THINKING,
       ...(systemText ? { system: cachedSystem(systemText) } : {}),
       messages: turns,
     })
@@ -218,6 +222,7 @@ export async function createBatch(cfg: Settings["ai"], requests: BatchRequest[])
         params: {
           model: cfg.model,
           max_tokens: r.maxTokens,
+          thinking: NO_THINKING,
           system: cachedSystem(r.system),
           messages: [{ role: "user" as const, content: r.user + JSON_SUFFIX }],
         },
