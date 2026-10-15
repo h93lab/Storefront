@@ -28,6 +28,13 @@ describe("validateGrouping", () => {
       { label: "dark mode", kind: "request", labels: ["dark mode"] },
       { label: "forgotten label", kind: "complaint", labels: ["forgotten label"] },
     ])
+    expect(res.forgotten).toBe(2) // "dark mode" and "forgotten label" were not placed by the reply
+  })
+
+  it("can report forgotten labels instead of giving each its own group", () => {
+    const res = validateGrouping({ map: [{ label: "dark mode", opportunity_id: 1 }], new: [] }, batch, new Set([1]), false)
+    expect(res.groups).toEqual([])
+    expect(res.forgottenLabels.map((b) => b.label)).toEqual(["offline mode — sleep stories", "paywall before trying content", "forgotten label"])
   })
 
   it("uses every label exactly once", () => {

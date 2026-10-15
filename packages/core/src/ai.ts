@@ -13,7 +13,12 @@ export class AiError extends Error {
 export interface ChatOptions {
   json?: boolean
   maxTokens?: number
+  /** Per-request timeout in ms (default 120s). */
+  timeoutMs?: number
 }
+
+/** Hosts that rejected the optional `thinking` field once; later requests skip it. */
+const noThinkingHosts = new Set<string>()
 
 /**
  * Sends a chat to the configured provider: the Anthropic Messages API when
@@ -43,6 +48,9 @@ async function chatOpenAi(cfg: Settings["ai"], messages: ChatMessage[], opts: Ch
       throw new AiError(`The AI base URL "${cfg.baseUrl}" is not a valid URL.`)
     }
   })()
+  const timeoutMs = opts.timeoutMs ?? 120_000
+  // Reasoning models (e.g. MiMo) otherwise spend the whole max_tokens budget thinking and return an empty reply.
+  if (!noThinkingHosts.has(host)) body.thinking = { type: "disabled" }
   const send = async (b: Record<string, unknown>) =>
     fetch(url, {
       method: "POST",
@@ -51,17 +59,21 @@ async function chatOpenAi(cfg: Settings["ai"], messages: ChatMessage[], opts: Ch
         ...(cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : {}),
       },
       body: JSON.stringify(b),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(timeoutMs),
     }).catch((e: Error & { cause?: { code?: string; message?: string } }) => {
-      const reason = e.name === "TimeoutError" ? "timed out after 120s" : (e.cause?.code ?? e.cause?.message ?? e.message)
+      const reason = e.name === "TimeoutError" ? `timed out after ${Math.round(timeoutMs / 1000)}s` : (e.cause?.code ?? e.cause?.message ?? e.message)
       throw new AiError(`Could not reach the AI provider at ${host} (${reason}). Check the base URL in Settings.`)
     })
 
   let res = await send(body)
-  // Some providers reject response_format; retry once without it.
-  if (res.status === 400 && opts.json) {
+  // Some providers reject optional fields (response_format, thinking); retry once without them.
+  // shortcut: both are dropped together, so a provider rejecting only one loses the other too.
+  if (res.status === 400 && (opts.json || body.thinking)) {
+    const hadThinking = body.thinking !== undefined
     delete body.response_format
+    delete body.thinking
     res = await send(body)
+    if (res.ok && hadThinking) noThinkingHosts.add(host)
   }
   if (!res.ok) {
     const text = await res.text().catch(() => "")
@@ -69,9 +81,17 @@ async function chatOpenAi(cfg: Settings["ai"], messages: ChatMessage[], opts: Ch
       res.status === 401 || res.status === 403 ? " Check the API key." : res.status === 404 ? " Check the base URL and model name." : ""
     throw new AiError(`AI provider returned HTTP ${res.status}.${hint} ${text.slice(0, 300)}`.trim())
   }
-  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
-  const content = data.choices?.[0]?.message?.content
+  const data = (await res.json()) as { choices?: { message?: { content?: string }; finish_reason?: string }[] }
+  const choice = data.choices?.[0]
+  const content = choice?.message?.content
   if (typeof content !== "string") throw new AiError("AI provider returned no message content")
+  if (!content.trim()) {
+    throw new AiError(
+      choice?.finish_reason === "length"
+        ? "AI reply was empty: max_tokens ran out before the model answered (reasoning models spend it on thinking)"
+        : "AI provider returned an empty reply",
+    )
+  }
   return content
 }
 
@@ -133,6 +153,13 @@ const safeHost = (u: string) => {
 
 const JSON_SUFFIX = "\n\nRespond with JSON only."
 
+/**
+ * Haiku 5.5 thinks by default and can spend all of max_tokens on it, returning no text at all, and accepts "disabled".
+ * Sonnet and Opus reject that value, so only Haiku gets it.
+ * shortcut: matched by model name; other families run without the field.
+ */
+const thinkingFor = (model: string) => (/haiku/i.test(model) ? { thinking: { type: "disabled" as const } } : {})
+
 const cachedSystem = (text: string) => [{ type: "text" as const, text, cache_control: { type: "ephemeral" as const } }]
 
 /**
@@ -158,6 +185,7 @@ async function chatAnthropic(cfg: Settings["ai"], messages: ChatMessage[], opts:
     response = await client.messages.create({
       model: cfg.model,
       max_tokens: opts.maxTokens ?? 4000,
+      ...thinkingFor(cfg.model),
       ...(systemText ? { system: cachedSystem(systemText) } : {}),
       messages: turns,
     })
@@ -198,6 +226,7 @@ export async function createBatch(cfg: Settings["ai"], requests: BatchRequest[])
         params: {
           model: cfg.model,
           max_tokens: r.maxTokens,
+          ...thinkingFor(cfg.model),
           system: cachedSystem(r.system),
           messages: [{ role: "user" as const, content: r.user + JSON_SUFFIX }],
         },
