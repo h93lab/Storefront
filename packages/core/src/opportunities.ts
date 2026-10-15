@@ -80,6 +80,8 @@ export interface GroupingResult {
   map: Map<string, number>
   /** new opportunities with their member labels */
   groups: { label: string; kind: OpportunityKind; labels: string[] }[]
+  /** How many labels the reply left out; each was given a group of its own. */
+  forgotten: number
 }
 
 /**
@@ -117,13 +119,15 @@ export function validateGrouping(reply: unknown, batch: UnmappedLabel[], existin
         .slice(0, 60) || members[0].slice(0, 60)
     groups.push({ label: canonical, kind: isKind(g?.kind) ? g.kind : majorityKind(members.map((m) => byLabel.get(m)!)), labels: members })
   }
+  let forgotten = 0
   for (const b of batch) {
     const label = normLabel(b.label)
     if (taken.has(label)) continue
     taken.add(label)
+    forgotten++
     groups.push({ label: label.slice(0, 60), kind: b.kind, labels: [label] })
   }
-  return { map, groups }
+  return { map, groups, forgotten }
 }
 
 function majorityKind(xs: UnmappedLabel[]): OpportunityKind {
@@ -142,6 +146,9 @@ Rules:
 - Killed opportunities are part of the existing list on purpose: duplicates of killed ideas must map to them.`
 
 const GROUP_BATCH = 120
+/** A reply that places fewer labels than this share of the batch (the model sometimes answers in prose) is retried, then skipped. */
+const GROUP_MAX_FORGOTTEN = 0.1
+const GROUP_ATTEMPTS = 3
 
 /**
  * The existing opportunities worth showing the model for one batch: those sharing the most words with the batch's
@@ -346,27 +353,42 @@ export async function groupLabels(
 
   const size = opts.batchSize ?? GROUP_BATCH
   let done = 0
+  let skipped = 0
   for (let i = 0; i < unmapped.length; i += size) {
     opts.signal?.throwIfAborted()
     const batch = unmapped.slice(i, i + size)
     // Reloaded per batch so later batches can join opportunities created by earlier ones.
     const all = await sql<{ id: number; label: string }[]>`select id::int, label from opportunities order by id`
     const existing = candidateOpportunities(all, batch)
-    const text = await chat(
-      settings.ai,
-      [
-        { role: "system", content: GROUP_SYSTEM },
-        { role: "user", content: JSON.stringify({ existing, labels: batch }) },
-      ],
-      { json: true, maxTokens: 8000, timeoutMs: 240_000 },
-    )
-    let reply: unknown = null
-    try {
-      reply = parseJsonReply(text)
-    } catch (e) {
-      log(`grouping reply was not valid JSON, one opportunity per label: ${(e as Error).message}`)
+    // Replies that skip most labels would otherwise become one junk opportunity per label, so retry and, failing that, leave the batch for the next run.
+    const known = new Set(existing.map((e) => e.id))
+    let grouping: GroupingResult | null = null
+    for (let attempt = 1; attempt <= GROUP_ATTEMPTS && !grouping; attempt++) {
+      const text = await chat(
+        settings.ai,
+        [
+          { role: "system", content: GROUP_SYSTEM },
+          { role: "user", content: JSON.stringify({ existing, labels: batch }) },
+        ],
+        { json: true, maxTokens: 8000, timeoutMs: 240_000 },
+      )
+      let reply: unknown = null
+      try {
+        reply = parseJsonReply(text)
+      } catch (e) {
+        log(`grouping reply was not valid JSON: ${(e as Error).message}`)
+      }
+      const g = validateGrouping(reply, batch, known)
+      if (g.forgotten <= batch.length * GROUP_MAX_FORGOTTEN) grouping = g
+      else log(`the model placed ${batch.length - g.forgotten}/${batch.length} labels (attempt ${attempt}/${GROUP_ATTEMPTS})`)
     }
-    const { map, groups } = validateGrouping(reply, batch, new Set(existing.map((e) => e.id)))
+    if (!grouping) {
+      skipped += batch.length
+      done += batch.length
+      log(`skipped ${batch.length} labels, left unmapped for the next run`)
+      continue
+    }
+    const { map, groups } = grouping
 
     if (groups.length) {
       const ids = await sql<{ id: number }[]>`
@@ -403,6 +425,7 @@ export async function groupLabels(
       log(`centroid update skipped: ${(e as Error).message}`)
     }
   }
+  if (skipped && !mapped && !created) throw new Error(`The model did not group any of the ${skipped} labels`)
   return { mapped, created }
 }
 

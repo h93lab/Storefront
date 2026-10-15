@@ -104,6 +104,14 @@ describe("Anthropic provider", () => {
     expect(body.thinking).toEqual({ type: "disabled" })
   })
 
+  it("only sends the thinking switch to Haiku: Sonnet and Opus reject it", async () => {
+    fake.requests.length = 0
+    await chat({ ...cfg(), model: "claude-sonnet-5-5" }, [{ role: "user", content: "hi" }])
+    await chat({ ...cfg(), model: "claude-haiku-5-5" }, [{ role: "user", content: "hi" }])
+    expect(fake.requests[0].body.thinking).toBeUndefined()
+    expect(fake.requests[1].body.thinking).toEqual({ type: "disabled" })
+  })
+
   it("asks for JSON only when json is set, and works with testConnection", async () => {
     fake.requests.length = 0
     await chat(cfg(), [{ role: "user", content: "data" }], { json: true, maxTokens: 50 })

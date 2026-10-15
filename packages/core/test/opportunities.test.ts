@@ -28,6 +28,7 @@ describe("validateGrouping", () => {
       { label: "dark mode", kind: "request", labels: ["dark mode"] },
       { label: "forgotten label", kind: "complaint", labels: ["forgotten label"] },
     ])
+    expect(res.forgotten).toBe(2) // "dark mode" and "forgotten label" were not placed by the reply
   })
 
   it("uses every label exactly once", () => {
