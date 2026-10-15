@@ -80,7 +80,8 @@ export interface GroupingResult {
   map: Map<string, number>
   /** new opportunities with their member labels */
   groups: { label: string; kind: OpportunityKind; labels: string[] }[]
-  /** How many labels the reply left out; each was given a group of its own. */
+  /** Labels the reply left out. With keepForgotten (default) each also got a group of its own. */
+  forgottenLabels: UnmappedLabel[]
   forgotten: number
 }
 
@@ -90,7 +91,7 @@ export interface GroupingResult {
  * mention wins), and labels the model forgot become opportunities of their own.
  * A reply that is not an object is treated as empty.
  */
-export function validateGrouping(reply: unknown, batch: UnmappedLabel[], existingIds: Set<number>): GroupingResult {
+export function validateGrouping(reply: unknown, batch: UnmappedLabel[], existingIds: Set<number>, keepForgotten = true): GroupingResult {
   const byLabel = new Map(batch.map((b) => [normLabel(b.label), b]))
   const taken = new Set<string>()
   const map = new Map<string, number>()
@@ -119,15 +120,15 @@ export function validateGrouping(reply: unknown, batch: UnmappedLabel[], existin
         .slice(0, 60) || members[0].slice(0, 60)
     groups.push({ label: canonical, kind: isKind(g?.kind) ? g.kind : majorityKind(members.map((m) => byLabel.get(m)!)), labels: members })
   }
-  let forgotten = 0
+  const forgottenLabels: UnmappedLabel[] = []
   for (const b of batch) {
     const label = normLabel(b.label)
     if (taken.has(label)) continue
     taken.add(label)
-    forgotten++
-    groups.push({ label: label.slice(0, 60), kind: b.kind, labels: [label] })
+    forgottenLabels.push(b)
+    if (keepForgotten) groups.push({ label: label.slice(0, 60), kind: b.kind, labels: [label] })
   }
-  return { map, groups, forgotten }
+  return { map, groups, forgotten: forgottenLabels.length, forgottenLabels }
 }
 
 function majorityKind(xs: UnmappedLabel[]): OpportunityKind {
@@ -146,8 +147,7 @@ Rules:
 - Killed opportunities are part of the existing list on purpose: duplicates of killed ideas must map to them.`
 
 const GROUP_BATCH = 120
-/** A reply that places fewer labels than this share of the batch (the model sometimes answers in prose) is retried, then skipped. */
-const GROUP_MAX_FORGOTTEN = 0.1
+/** Times a batch is sent: the model often leaves labels out of a reply, so what it left out is asked again. */
 const GROUP_ATTEMPTS = 3
 
 /**
@@ -357,18 +357,18 @@ export async function groupLabels(
   for (let i = 0; i < unmapped.length; i += size) {
     opts.signal?.throwIfAborted()
     const batch = unmapped.slice(i, i + size)
-    // Reloaded per batch so later batches can join opportunities created by earlier ones.
-    const all = await sql<{ id: number; label: string }[]>`select id::int, label from opportunities order by id`
-    const existing = candidateOpportunities(all, batch)
-    // Replies that skip most labels would otherwise become one junk opportunity per label, so retry and, failing that, leave the batch for the next run.
-    const known = new Set(existing.map((e) => e.id))
-    let grouping: GroupingResult | null = null
-    for (let attempt = 1; attempt <= GROUP_ATTEMPTS && !grouping; attempt++) {
+    // A reply that leaves labels out must not turn each one into a junk opportunity. Keep what the model placed, ask
+    // again about the rest, and leave whatever it still skips unmapped for the next run.
+    let pending: UnmappedLabel[] = batch
+    for (let attempt = 1; attempt <= GROUP_ATTEMPTS && pending.length; attempt++) {
+      // Reloaded per attempt so later ones can join opportunities created by earlier ones.
+      const all = await sql<{ id: number; label: string }[]>`select id::int, label from opportunities order by id`
+      const existing = candidateOpportunities(all, pending)
       const text = await chat(
         settings.ai,
         [
           { role: "system", content: GROUP_SYSTEM },
-          { role: "user", content: JSON.stringify({ existing, labels: batch }) },
+          { role: "user", content: JSON.stringify({ existing, labels: pending }) },
         ],
         { json: true, maxTokens: 8000, timeoutMs: 240_000 },
       )
@@ -378,41 +378,36 @@ export async function groupLabels(
       } catch (e) {
         log(`grouping reply was not valid JSON: ${(e as Error).message}`)
       }
-      const g = validateGrouping(reply, batch, known)
-      if (g.forgotten <= batch.length * GROUP_MAX_FORGOTTEN) grouping = g
-      else log(`the model placed ${batch.length - g.forgotten}/${batch.length} labels (attempt ${attempt}/${GROUP_ATTEMPTS})`)
-    }
-    if (!grouping) {
-      skipped += batch.length
-      done += batch.length
-      log(`skipped ${batch.length} labels, left unmapped for the next run`)
-      continue
-    }
-    const { map, groups } = grouping
+      const { map, groups, forgottenLabels } = validateGrouping(reply, pending, new Set(existing.map((e) => e.id)), false)
 
-    if (groups.length) {
-      const ids = await sql<{ id: number }[]>`
-        insert into opportunities (label, kind)
-        select * from unnest(${groups.map((g) => g.label)}::text[], ${groups.map((g) => g.kind)}::text[])
-        returning id::int`
-      const rows = groups.flatMap((g, gi) => g.labels.map((label) => ({ label, opportunity_id: ids[gi].id })))
-      await sql`
-        insert into opportunity_labels (label, opportunity_id)
-        select * from unnest(${rows.map((r) => r.label)}::text[], ${rows.map((r) => r.opportunity_id)}::bigint[])
-        on conflict (label) do nothing`
-      created += groups.length
-      ids.forEach((r) => touched.add(r.id))
+      if (groups.length) {
+        const ids = await sql<{ id: number }[]>`
+          insert into opportunities (label, kind)
+          select * from unnest(${groups.map((g) => g.label)}::text[], ${groups.map((g) => g.kind)}::text[])
+          returning id::int`
+        const rows = groups.flatMap((g, gi) => g.labels.map((label) => ({ label, opportunity_id: ids[gi].id })))
+        await sql`
+          insert into opportunity_labels (label, opportunity_id)
+          select * from unnest(${rows.map((r) => r.label)}::text[], ${rows.map((r) => r.opportunity_id)}::bigint[])
+          on conflict (label) do nothing`
+        created += groups.length
+        ids.forEach((r) => touched.add(r.id))
+      }
+      if (map.size) {
+        const entries = [...map]
+        await sql`
+          insert into opportunity_labels (label, opportunity_id)
+          select * from unnest(${entries.map(([l]) => l)}::text[], ${entries.map(([, id]) => id)}::bigint[])
+          on conflict (label) do nothing`
+        await sql`update opportunities set updated_at = now() where id = any(${[...new Set(map.values())]}::bigint[])`
+        mapped += map.size
+        for (const id of map.values()) touched.add(id)
+      }
+      if (forgottenLabels.length) log(`the model left out ${forgottenLabels.length}/${pending.length} labels (attempt ${attempt}/${GROUP_ATTEMPTS})`)
+      pending = forgottenLabels
     }
-    if (map.size) {
-      const entries = [...map]
-      await sql`
-        insert into opportunity_labels (label, opportunity_id)
-        select * from unnest(${entries.map(([l]) => l)}::text[], ${entries.map(([, id]) => id)}::bigint[])
-        on conflict (label) do nothing`
-      await sql`update opportunities set updated_at = now() where id = any(${[...new Set(map.values())]}::bigint[])`
-      mapped += map.size
-      for (const id of map.values()) touched.add(id)
-    }
+    skipped += pending.length
+    if (pending.length) log(`${pending.length} labels left unmapped for the next run`)
     done += batch.length
     log(`grouped ${done}/${unmapped.length} labels`)
     opts.onProgress?.(`Grouping labels ${done}/${unmapped.length}`)
