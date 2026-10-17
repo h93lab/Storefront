@@ -5,7 +5,7 @@ const config: NextConfig = {
   output: "standalone",
   outputFileTracingRoot: path.join(import.meta.dirname, "../.."),
   transpilePackages: ["@lens/core"],
-  serverExternalPackages: ["sharp", "postgres", "google-play-scraper"],
+  serverExternalPackages: ["sharp", "postgres", "google-play-scraper", "@sentry/node-core"],
   poweredByHeader: false,
 }
 

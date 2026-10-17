@@ -33,6 +33,7 @@ import {
   waitForDb,
   type Job,
 } from "@lens/core"
+import { captureError, flushErrors, initErrorTracking } from "@lens/core/errors"
 import { migrate } from "@lens/core/migrate"
 
 const POLL_MS = Number(process.env.WORKER_POLL_MS ?? 2000)
@@ -201,6 +202,7 @@ async function loop(slot: number) {
         await retryJob(job.id, message, delay).catch(() => {})
       } else {
         log("job failed", { job: job.id, error: message })
+        captureError(e, { job: job.id, type: job.type, payload: job.payload, attempt: job.attempts })
         await failJob(job.id, message).catch(() => {})
       }
     }
@@ -239,6 +241,7 @@ async function refreshSchedule() {
 }
 
 async function main() {
+  initErrorTracking("worker")
   log("worker starting", { mediaDir: env.mediaDir, concurrency: CONCURRENCY })
   await waitForDb((m) => log(m))
   await migrate((m) => log(m))
@@ -268,7 +271,9 @@ async function main() {
 
 process.on("unhandledRejection", (e) => log("unhandled rejection", { error: e instanceof Error ? e.stack : String(e) }))
 
-main().catch((e) => {
+main().catch(async (e) => {
   log("worker crashed", { error: e instanceof Error ? e.stack : String(e) })
+  captureError(e)
+  await flushErrors()
   process.exit(1)
 })

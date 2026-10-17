@@ -2,8 +2,11 @@ import crypto from "node:crypto"
 import http from "node:http"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { waitForDb } from "@lens/core"
+import { captureError, initErrorTracking } from "@lens/core/errors"
 import { migrate } from "@lens/core/migrate"
 import { buildServer } from "./tools"
+
+initErrorTracking("mcp")
 
 const PORT = Number(process.env.MCP_PORT ?? 3001)
 const TOKEN = process.env.MCP_TOKEN ?? ""
@@ -77,6 +80,7 @@ const server = http.createServer(async (req, res) => {
     await transport.handleRequest(req, res, body)
   } catch (e) {
     console.error(e)
+    captureError(e, { path: pathname })
     if (!res.headersSent) {
       res
         .writeHead(400, { "content-type": "application/json" })
