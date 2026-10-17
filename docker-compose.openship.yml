@@ -1,0 +1,69 @@
+# Storefront Lens on Openship (H93Lab server). Flattened from docker-compose.yml:
+# no YAML anchors, env_file, depends_on conditions or profiles, and a local Postgres.
+# Secrets are set in Openship (service env, secret), never here:
+#   db:                 POSTGRES_PASSWORD
+#   web, worker, mcp:   DATABASE_URL, MCP_TOKEN, SESSION_SECRET
+services:
+  db:
+    image: pgvector/pgvector:0.8.7-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lens
+      POSTGRES_USER: lens
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+  web:
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    environment:
+      MEDIA_DIR: /data/media
+      DATABASE_SSL: disable
+      PUBLIC_URL: https://store.h93lab.com
+      PUBLIC_MCP_URL: https://store-mcp.h93lab.com/mcp
+      TZ: Asia/Dubai
+    ports:
+      - "3000"
+    volumes:
+      - media:/data/media
+
+  worker:
+    build:
+      context: .
+      target: service
+    restart: unless-stopped
+    working_dir: /app/apps/worker
+    command: ["node_modules/.bin/tsx", "src/index.ts"]
+    environment:
+      MEDIA_DIR: /data/media
+      MIGRATIONS_DIR: /app/db/migrations
+      DATABASE_SSL: disable
+      PUBLIC_URL: https://store.h93lab.com
+      PUBLIC_MCP_URL: https://store-mcp.h93lab.com/mcp
+      TZ: Asia/Dubai
+    volumes:
+      - media:/data/media
+
+  mcp:
+    build:
+      context: .
+      target: service
+    restart: unless-stopped
+    working_dir: /app/apps/mcp
+    command: ["node_modules/.bin/tsx", "src/index.ts"]
+    environment:
+      MEDIA_DIR: /data/media
+      DATABASE_SSL: disable
+      PUBLIC_URL: https://store.h93lab.com
+      PUBLIC_MCP_URL: https://store-mcp.h93lab.com/mcp
+      TZ: Asia/Dubai
+    ports:
+      - "3001"
+    volumes:
+      - media:/data/media
+
+volumes:
+  pg-data:
+  media:
