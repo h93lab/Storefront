@@ -1,8 +1,8 @@
-import * as Sentry from "@sentry/node-core"
+import * as Sentry from "@sentry/node-core/light"
 
 /**
  * Error reporting to GlitchTip (Sentry protocol). Off unless `SENTRY_DSN` is set.
- * Uses the light `@sentry/node-core` SDK: errors only, no tracing or OpenTelemetry.
+ * Uses `@sentry/node-core/light`: errors only, no tracing, and it loads without OpenTelemetry.
  */
 let enabled = false
 
