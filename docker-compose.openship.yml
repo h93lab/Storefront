@@ -34,8 +34,8 @@ services:
       context: .
       dockerfile: Dockerfile               # last stage is `service`
     restart: unless-stopped
-    working_dir: /app/apps/worker
-    command: ["node_modules/.bin/tsx", "src/index.ts"]
+    # Openship ignores working_dir, so cd inside the command.
+    command: ["sh", "-c", "cd /app/apps/worker && exec node_modules/.bin/tsx src/index.ts"]
     environment:
       MEDIA_DIR: /data/media
       MIGRATIONS_DIR: /app/db/migrations
@@ -51,8 +51,8 @@ services:
       context: .
       dockerfile: Dockerfile               # last stage is `service`
     restart: unless-stopped
-    working_dir: /app/apps/mcp
-    command: ["node_modules/.bin/tsx", "src/index.ts"]
+    # Openship ignores working_dir, so cd inside the command.
+    command: ["sh", "-c", "cd /app/apps/mcp && exec node_modules/.bin/tsx src/index.ts"]
     environment:
       MEDIA_DIR: /data/media
       DATABASE_SSL: disable
